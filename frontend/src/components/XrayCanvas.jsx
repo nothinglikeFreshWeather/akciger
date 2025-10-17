@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Stage, Layer, Image, Rect, Circle, Line, Transformer } from 'react-konva';
-import { calculateCanvasSize, createRectConfig, generateId, mouseToCanvasCoords } from '../utils/canvasHelpers';
+import { createRectConfig, generateId, mouseToCanvasCoords } from '../utils/canvasHelpers';
 import { DEFAULT_PAINTING_CONFIG } from '../utils/mockData';
 import { useCursorManager } from '../hooks/useCursorManager';
 
@@ -30,6 +30,7 @@ const XrayCanvas = ({
   const [currentLine, setCurrentLine] = useState([]);
   const [isPanning, setIsPanning] = useState(false);
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
+  const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
 
   // Cursor yönetimi için hook
   const { cursorState } = useCursorManager(
@@ -39,24 +40,20 @@ const XrayCanvas = ({
   );
 
   /**
-   * Canvas boyutunu hesapla ve güncelle
+   * Canvas boyutunu hesapla ve güncelle - Her zaman container boyutunu kullan
    */
   const updateStageSize = useCallback(() => {
-    if (!image) return;
-    
     const container = stageRef.current?.container();
     if (!container) return;
     
     const containerRect = container.getBoundingClientRect();
-    const { width, height } = calculateCanvasSize(
-      containerRect.width,
-      containerRect.height,
-      image.naturalWidth,
-      image.naturalHeight
-    );
     
-    setStageSize({ width, height });
-  }, [image]);
+    // Stage her zaman container boyutunu kaplasın
+    setStageSize({ 
+      width: Math.max(containerRect.width, 400), 
+      height: Math.max(containerRect.height, 300) 
+    });
+  }, []);
 
   useEffect(() => {
     updateStageSize();
@@ -229,8 +226,8 @@ const XrayCanvas = ({
         } else {
           console.log('Silgi: Hiçbir şekil bulunamadı, pozisyon:', pos);
         }
-      } else if (selectedTool === 'pan' || selectedTool === null) {
-        // Pan aracı veya hiçbir araç seçili değilken pan modu
+      } else if (selectedTool === 'pan') {
+        // Sadece pan aracı seçiliyken pan modu
         setIsPanning(true);
       }
     }
@@ -244,6 +241,13 @@ const XrayCanvas = ({
     
     // Mouse pozisyonunu güncelle (debug için)
     setMousePosition(pos);
+    
+    // Pan işlemi için pozisyon güncelle
+    if (isPanning && selectedTool === 'pan') {
+      const stage = e.target.getStage();
+      const newPos = stage.position();
+      setPanPosition({ x: newPos.x, y: newPos.y });
+    }
     
     if (isDrawingLine && selectedTool === 'pen') {
       // Kalem çizimi - sürekli çizgi ekle
@@ -265,7 +269,7 @@ const XrayCanvas = ({
         });
       }
     }
-  }, [isDrawing, isDrawingLine, newShape, selectedTool, getAccuratePosition]);
+  }, [isDrawing, isDrawingLine, newShape, selectedTool, getAccuratePosition, isPanning]);
 
 
   /**
@@ -417,23 +421,20 @@ const XrayCanvas = ({
       y: (pointer.y - stage.y()) / oldScale,
     };
     
-    const newScale = e.evt.deltaY > 0 ? oldScale / scaleBy : oldScale * scaleBy;
+    const newScale = e.evt.deltaY > 0 ? zoomLevel / scaleBy : zoomLevel * scaleBy;
     
-    stage.scale({ x: newScale, y: newScale });
+    // Zoom level'ı güncelle
+    onZoomChange?.(newScale);
     
+    // Pan position'ı güncelle
     const newPos = {
       x: pointer.x - mousePointTo.x * newScale,
       y: pointer.y - mousePointTo.y * newScale,
     };
     
-    stage.position(newPos);
-    stage.batchDraw();
+    setPanPosition(newPos);
     
-    if (onZoomChange) {
-      onZoomChange(newScale);
-    }
-    
-  }, [onZoomChange, selectedTool]);
+  }, [onZoomChange, selectedTool, zoomLevel]);
 
   if (!image) {
     return (
@@ -471,13 +472,11 @@ const XrayCanvas = ({
         ref={stageRef}
         width={stageSize.width}
         height={stageSize.height}
-        scaleX={zoomLevel}
-        scaleY={zoomLevel}
         onMouseDown={handleStageClick}
         onMouseMove={handleStageMouseMove}
         onMouseUp={handleStageMouseUp}
         onWheel={handleWheel}
-        draggable={selectedTool === 'pan' || selectedTool === null} // Pan aracı veya hiçbir araç seçili değilken pan aktif
+        draggable={selectedTool === 'pan'} // Sadece pan aracı seçiliyken pan aktif
         style={{
           cursor: cursorState
         }}
@@ -488,6 +487,10 @@ const XrayCanvas = ({
             image={image}
             width={stageSize.width}
             height={stageSize.height}
+            scaleX={zoomLevel}
+            scaleY={zoomLevel}
+            x={panPosition.x}
+            y={panPosition.y}
             listening={false}
           />
         </Layer>
@@ -651,7 +654,7 @@ const XrayCanvas = ({
           <div>Zoom: {Math.round(zoomLevel * 100)}%</div>
           <div>Drawing: {isDrawing ? 'Yes' : 'No'}</div>
           <div>Panning: {isPanning ? 'Yes' : 'No'}</div>
-          <div>Draggable: {selectedTool === 'pan' || selectedTool === null ? 'Yes' : 'No'}</div>
+          <div>Draggable: {selectedTool === 'pan' ? 'Yes' : 'No'}</div>
           <div style={{marginTop: '4px', fontSize: '10px', color: '#94a3b8'}}>
             Eraser: Click on shapes to delete
           </div>

@@ -11,24 +11,64 @@
  * @returns {Object} {width, height, scale}
  */
 export const calculateCanvasSize = (containerWidth, containerHeight, imageWidth, imageHeight) => {
-  const containerAspect = containerWidth / containerHeight;
+  // Minimum boyutları garanti et
+  const minWidth = 400;
+  const minHeight = 300;
+  
+  const safeContainerWidth = Math.max(containerWidth, minWidth);
+  const safeContainerHeight = Math.max(containerHeight, minHeight);
+  
+  const containerAspect = safeContainerWidth / safeContainerHeight;
   const imageAspect = imageWidth / imageHeight;
   
   let width, height, scale;
   
   if (imageAspect > containerAspect) {
     // Görsel daha geniş
-    width = containerWidth;
-    height = containerWidth / imageAspect;
-    scale = containerWidth / imageWidth;
+    width = safeContainerWidth;
+    height = safeContainerWidth / imageAspect;
+    scale = safeContainerWidth / imageWidth;
   } else {
     // Görsel daha yüksek
-    height = containerHeight;
-    width = containerHeight * imageAspect;
-    scale = containerHeight / imageHeight;
+    height = safeContainerHeight;
+    width = safeContainerHeight * imageAspect;
+    scale = safeContainerHeight / imageHeight;
   }
   
+  // Minimum boyutları garanti et
+  width = Math.max(width, minWidth);
+  height = Math.max(height, minHeight);
+  
   return { width, height, scale };
+};
+
+/**
+ * Görüntünün başlangıçtaki transform değerlerini hesapla
+ * @param {number} containerWidth - Container genişliği
+ * @param {number} containerHeight - Container yüksekliği
+ * @param {number} imageWidth - Görsel genişliği
+ * @param {number} imageHeight - Görsel yüksekliği
+ * @returns {Object} {scale, x, y}
+ */
+export const calculateInitialImageTransform = (containerWidth, containerHeight, imageWidth, imageHeight) => {
+  const containerAspect = containerWidth / containerHeight;
+  const imageAspect = imageWidth / imageHeight;
+  
+  let scale, x, y;
+  
+  if (imageAspect > containerAspect) {
+    // Görsel daha geniş - container genişliğine sığdır
+    scale = containerWidth / imageWidth;
+    x = 0;
+    y = (containerHeight - imageHeight * scale) / 2;
+  } else {
+    // Görsel daha yüksek - container yüksekliğine sığdır
+    scale = containerHeight / imageHeight;
+    x = (containerWidth - imageWidth * scale) / 2;
+    y = 0;
+  }
+  
+  return { scale, x, y };
 };
 
 /**

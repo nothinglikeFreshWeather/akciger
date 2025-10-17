@@ -544,7 +544,7 @@ function App() {
         </div>
 
         {/* Sağ Alan - Canvas */}
-        <div style={{flex: 1, backgroundColor: '#0f172a', position: 'relative', overflow: 'hidden', width: 'calc(100vw - 280px)'}}>
+        <div style={{flex: 1, backgroundColor: '#0f172a', position: 'relative', overflow: 'auto', width: 'calc(100vw - 280px)', minWidth: '400px'}}>
           {/* Canvas Info Bar */}
           {image && (
             <div style={{
