@@ -27,6 +27,8 @@ export const useCursorManager = (selectedTool, isDrawing = false, isPanning = fa
         case 'circle':
           return 'crosshair';
         case 'eraser':
+          return 'crosshair';
+        case 'pan':
           return 'grab';
         case 'select':
           return 'move';

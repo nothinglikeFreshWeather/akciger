@@ -141,57 +141,96 @@ const XrayCanvas = ({
       } else if (selectedTool === 'eraser') {
         // Silgi modu - tıklanan şekli sil
         const stage = e.target.getStage();
-        const shapes = stage.find('Rect, Circle, Line');
         
-        // Tıklanan pozisyondaki şekli bul ve sil
-        shapes.forEach(shape => {
+        // Tüm şekilleri kontrol et
+        const shapes = stage.find('Rect, Circle, Line');
+        let foundShape = null;
+        
+        // En üstteki şekli bul (z-index'e göre)
+        for (let i = shapes.length - 1; i >= 0; i--) {
+          const shape = shapes[i];
           let isHit = false;
           
           if (shape.getClassName() === 'Line') {
-            // Line için özel hit detection
+            // Line için basit hit detection
             const points = shape.points();
-            for (let i = 0; i < points.length - 2; i += 2) {
-              const x1 = points[i];
-              const y1 = points[i + 1];
-              const x2 = points[i + 2];
-              const y2 = points[i + 3];
+            const strokeWidth = shape.strokeWidth() || 2;
+            
+            for (let j = 0; j < points.length - 2; j += 2) {
+              const x1 = points[j];
+              const y1 = points[j + 1];
+              const x2 = points[j + 2];
+              const y2 = points[j + 3];
               
-              // Nokta-çizgi mesafesi hesapla
-              const distance = Math.abs((y2 - y1) * pos.x - (x2 - x1) * pos.y + x2 * y1 - y2 * x1) / 
-                              Math.sqrt(Math.pow(y2 - y1, 2) + Math.pow(x2 - x1, 2));
+              // Nokta-çizgi mesafesi
+              const A = pos.x - x1;
+              const B = pos.y - y1;
+              const C = x2 - x1;
+              const D = y2 - y1;
               
-              if (distance < 10) { // 10px tolerans
+              const dot = A * C + B * D;
+              const lenSq = C * C + D * D;
+              let param = -1;
+              
+              if (lenSq !== 0) {
+                param = dot / lenSq;
+              }
+              
+              let xx, yy;
+              if (param < 0) {
+                xx = x1;
+                yy = y1;
+              } else if (param > 1) {
+                xx = x2;
+                yy = y2;
+              } else {
+                xx = x1 + param * C;
+                yy = y1 + param * D;
+              }
+              
+              const dx = pos.x - xx;
+              const dy = pos.y - yy;
+              const distance = Math.sqrt(dx * dx + dy * dy);
+              
+              if (distance <= strokeWidth + 5) { // 5px tolerans
                 isHit = true;
                 break;
               }
             }
-          } else {
-            // Rect ve Circle için normal hit detection
-            const shapeX = shape.x();
-            const shapeY = shape.y();
+          } else if (shape.getClassName() === 'Circle') {
+            // Circle için hit detection
+            const centerX = shape.x();
+            const centerY = shape.y();
+            const radius = shape.radius();
+            const distance = Math.sqrt(Math.pow(pos.x - centerX, 2) + Math.pow(pos.y - centerY, 2));
+            isHit = distance <= radius;
+          } else if (shape.getClassName() === 'Rect') {
+            // Rect için hit detection
+            const rectX = shape.x();
+            const rectY = shape.y();
+            const rectWidth = shape.width() * shape.scaleX();
+            const rectHeight = shape.height() * shape.scaleY();
             
-            if (shape.getClassName() === 'Circle') {
-              const radius = shape.radius();
-              const distance = Math.sqrt(Math.pow(pos.x - shapeX, 2) + Math.pow(pos.y - shapeY, 2));
-              isHit = distance <= radius;
-            } else {
-              // Rect
-              const shapeWidth = shape.width() * shape.scaleX();
-              const shapeHeight = shape.height() * shape.scaleY();
-              isHit = pos.x >= shapeX && pos.x <= shapeX + shapeWidth &&
-                      pos.y >= shapeY && pos.y <= shapeY + shapeHeight;
-            }
+            isHit = pos.x >= rectX && pos.x <= rectX + rectWidth &&
+                    pos.y >= rectY && pos.y <= rectY + rectHeight;
           }
           
           if (isHit) {
-            if (onUserRegionDelete) {
-              onUserRegionDelete(shape.id());
-            }
-            return; // İlk bulunan şekli sil ve dur
+            foundShape = shape;
+            break;
           }
-        });
-      } else {
-        // Pan modu
+        }
+        
+        if (foundShape) {
+          console.log('Silgi: Şekil bulundu ve siliniyor:', foundShape.getClassName(), foundShape.id());
+          if (onUserRegionDelete) {
+            onUserRegionDelete(foundShape.id());
+          }
+        } else {
+          console.log('Silgi: Hiçbir şekil bulunamadı, pozisyon:', pos);
+        }
+      } else if (selectedTool === 'pan' || selectedTool === null) {
+        // Pan aracı veya hiçbir araç seçili değilken pan modu
         setIsPanning(true);
       }
     }
@@ -362,7 +401,7 @@ const XrayCanvas = ({
     const isCtrlPressed = e.evt.ctrlKey || e.evt.metaKey;
     
     // Çizim araçları seçiliyken ve Ctrl basılı değilse zoom'u devre dışı bırak
-    if (!isCtrlPressed && (selectedTool === 'pen' || selectedTool === 'rect' || selectedTool === 'circle')) {
+    if (!isCtrlPressed && (selectedTool === 'pen' || selectedTool === 'rect' || selectedTool === 'circle' || selectedTool === 'eraser')) {
       return;
     }
     
@@ -438,7 +477,7 @@ const XrayCanvas = ({
         onMouseMove={handleStageMouseMove}
         onMouseUp={handleStageMouseUp}
         onWheel={handleWheel}
-        draggable={selectedTool === 'eraser' || selectedTool === null} // Silgi aracı veya hiçbir araç seçili değilken pan aktif
+        draggable={selectedTool === 'pan' || selectedTool === null} // Pan aracı veya hiçbir araç seçili değilken pan aktif
         style={{
           cursor: cursorState
         }}
@@ -596,20 +635,26 @@ const XrayCanvas = ({
           position: 'absolute',
           top: '10px',
           left: '10px',
-          backgroundColor: 'rgba(0, 0, 0, 0.8)',
+          backgroundColor: 'rgba(0, 0, 0, 0.9)',
           color: 'white',
-          padding: '8px 12px',
+          padding: '10px 14px',
           borderRadius: '6px',
-          fontSize: '12px',
+          fontSize: '11px',
           fontFamily: 'monospace',
           zIndex: 1000,
-          border: '1px solid #333'
+          border: '1px solid #333',
+          minWidth: '200px'
         }}>
+          <div style={{fontWeight: 'bold', marginBottom: '4px', color: '#60a5fa'}}>Debug Panel</div>
           <div>Mouse: ({Math.round(mousePosition.x)}, {Math.round(mousePosition.y)})</div>
-          <div>Tool: {selectedTool}</div>
+          <div>Tool: <span style={{color: selectedTool === 'eraser' ? '#ef4444' : '#10b981'}}>{selectedTool}</span></div>
           <div>Zoom: {Math.round(zoomLevel * 100)}%</div>
           <div>Drawing: {isDrawing ? 'Yes' : 'No'}</div>
           <div>Panning: {isPanning ? 'Yes' : 'No'}</div>
+          <div>Draggable: {selectedTool === 'pan' || selectedTool === null ? 'Yes' : 'No'}</div>
+          <div style={{marginTop: '4px', fontSize: '10px', color: '#94a3b8'}}>
+            Eraser: Click on shapes to delete
+          </div>
         </div>
       )}
     </div>

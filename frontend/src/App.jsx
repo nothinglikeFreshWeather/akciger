@@ -18,7 +18,7 @@ function App() {
   const [paintingConfig, setPaintingConfig] = useState(DEFAULT_PAINTING_CONFIG);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [selectedTool, setSelectedTool] = useState('rect'); // rect, circle, pen, eraser
+  const [selectedTool, setSelectedTool] = useState('pan'); // rect, circle, pen, eraser, pan
   const [canvasCursor, setCanvasCursor] = useState('default');
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const [showCursorIndicator, setShowCursorIndicator] = useState(false);
@@ -263,12 +263,13 @@ function App() {
             <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
               🎨 Araçlar
             </div>
-            <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '4px'}}>
+            <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr', gap: '4px'}}>
               {[
-                { id: 'rect', icon: '▭', label: 'Rect', cursor: 'crosshair' },
-                { id: 'circle', icon: '○', label: 'Circle', cursor: 'crosshair' },
-                { id: 'pen', icon: '✏️', label: 'Pen', cursor: 'crosshair' },
-                { id: 'eraser', icon: '🧹', label: 'Erase', cursor: 'grab' }
+                { id: 'rect', icon: '▭', label: 'Rect', cursor: 'crosshair', cursorIcon: '┼' },
+                { id: 'circle', icon: '○', label: 'Circle', cursor: 'crosshair', cursorIcon: '⊙' },
+                { id: 'pen', icon: '✏️', label: 'Pen', cursor: 'crosshair', cursorIcon: '✎' },
+                { id: 'eraser', icon: '🧹', label: 'Erase', cursor: 'crosshair', cursorIcon: '✕' },
+                { id: 'pan', icon: '✋', label: 'Pan', cursor: 'grab', cursorIcon: '✋' }
               ].map(tool => (
                 <button
                   key={tool.id}
@@ -290,10 +291,20 @@ function App() {
                     minHeight: '40px',
                     cursor: tool.cursor
                   }}
-                  title={`${tool.label} - ${tool.cursor === 'crosshair' ? 'Çizim aracı' : 'Silgi aracı'}`}
+                  title={`${tool.label} - ${tool.cursor === 'crosshair' ? 'Çizim aracı' : tool.cursor === 'grab' ? 'Kaydırma aracı' : 'Silgi aracı'} (${tool.cursor})`}
                 >
-                  <span style={{fontSize: '14px'}}>{tool.icon}</span>
-                  <span style={{fontSize: '8px'}}>{tool.label}</span>
+                  <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px'}}>
+                    <span style={{fontSize: '14px'}}>{tool.icon}</span>
+                    <div style={{display: 'flex', alignItems: 'center', gap: '3px'}}>
+                      <span style={{fontSize: '8px'}}>{tool.label}</span>
+                      <span style={{
+                        fontSize: '7px', 
+                        color: selectedTool === tool.id ? '#60a5fa' : '#64748b',
+                        fontWeight: 'bold',
+                        opacity: 0.8
+                      }}>{tool.cursorIcon}</span>
+                    </div>
+                  </div>
                   {selectedTool === tool.id && (
                     <div style={{
                       position: 'absolute',
@@ -463,29 +474,70 @@ function App() {
                 backgroundColor: '#374151',
                 borderRadius: '4px',
                 padding: '8px',
-                border: '1px solid #4b5563',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center'
+                border: '1px solid #4b5563'
               }}>
-                <span style={{fontSize: '10px', color: '#cbd5e1'}}>
-                  {userRegions.length} bölge
-                </span>
-                <button
-                  onClick={() => setUserRegions([])}
-                  style={{
-                    padding: '4px 8px',
-                    backgroundColor: '#ef4444',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '3px',
-                    fontSize: '9px',
-                    cursor: 'pointer'
-                  }}
-                  title="Tümünü Temizle"
-                >
-                  🗑️
-                </button>
+                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px'}}>
+                  <span style={{fontSize: '10px', color: '#cbd5e1'}}>
+                    {userRegions.length} bölge
+                  </span>
+                  <button
+                    onClick={() => setUserRegions([])}
+                    style={{
+                      padding: '4px 8px',
+                      backgroundColor: '#ef4444',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '3px',
+                      fontSize: '9px',
+                      cursor: 'pointer'
+                    }}
+                    title="Tümünü Temizle"
+                  >
+                    🗑️
+                  </button>
+                </div>
+                <div style={{display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '120px', overflowY: 'auto'}}>
+                  {userRegions.map((region, index) => (
+                    <div key={region.id} style={{
+                      backgroundColor: '#1e293b',
+                      borderRadius: '3px',
+                      padding: '4px 6px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      fontSize: '9px'
+                    }}>
+                      <div style={{display: 'flex', alignItems: 'center', gap: '4px'}}>
+                        <div
+                          style={{
+                            width: '8px',
+                            height: '8px',
+                            borderRadius: '1px',
+                            backgroundColor: region.fill || region.stroke || '#3b82f6'
+                          }}
+                        ></div>
+                        <span style={{color: '#cbd5e1'}}>
+                          {region.type === 'line' ? 'Line' : region.type === 'circle' ? 'Circle' : 'Rect'} #{index + 1}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => handleUserRegionDelete(region.id)}
+                        style={{
+                          padding: '2px 4px',
+                          backgroundColor: '#ef4444',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '2px',
+                          fontSize: '8px',
+                          cursor: 'pointer'
+                        }}
+                        title="Sil"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}
