@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import ImageUploader from './components/ImageUploader';
 import XrayCanvas from './components/XrayCanvas';
 import ColorModal from './components/ColorModal';
@@ -6,6 +6,7 @@ import ZoomControls from './components/ZoomControls';
 import CursorIndicator from './components/CursorIndicator';
 import { getMockDetections, DEFAULT_PAINTING_CONFIG } from './utils/mockData';
 import { calculateZoomScale } from './utils/canvasHelpers';
+import { getSliceImage, getVolume, testApiConnection } from './services/flaskApi';
 
 /**
  * Ana uygulama bileşeni - Profesyonel X-ray Analiz Arayüzü
@@ -23,27 +24,177 @@ function App() {
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const [showCursorIndicator, setShowCursorIndicator] = useState(false);
   const [isColorModalOpen, setIsColorModalOpen] = useState(false);
+  
+  // Backend API state'leri
+  const [apiConnected, setApiConnected] = useState(false);
+  const [currentSlice, setCurrentSlice] = useState(0);
+  const [totalSlices, setTotalSlices] = useState(0);
+  const [volumeData, setVolumeData] = useState(null);
+  const [isLoadingSlice, setIsLoadingSlice] = useState(false);
+  const [apiError, setApiError] = useState(null);
+  const [userDrawnArea, setUserDrawnArea] = useState(null); // Doktorun çizdiği alan (pixel)
+
+  // Backend'den dilim görüntüsü yükleme
+  const loadSliceFromBackend = useCallback(async (sliceIndex) => {
+    if (!apiConnected) return;
+    
+    setIsLoadingSlice(true);
+    setApiError(null);
+    
+    try {
+      // Eski blob URL'yi temizle (memory leak önlemi)
+      if (image && image.src && image.src.startsWith('blob:')) {
+        URL.revokeObjectURL(image.src);
+      }
+      
+      const imageUrl = await getSliceImage(sliceIndex);
+      const img = new Image();
+      
+      img.onload = () => {
+        setImage(img);
+        setIsLoadingSlice(false);
+      };
+      
+      img.onerror = () => {
+        setIsLoadingSlice(false);
+        setApiError('Görüntü yüklenemedi');
+      };
+      
+      img.src = imageUrl;
+    } catch (error) {
+      console.error('Dilim yükleme hatası:', error);
+      setApiError(error.message || 'Backend\'den görüntü alınamadı');
+      setIsLoadingSlice(false);
+    }
+  }, [apiConnected, image]);
+
+  // Backend'den hacim/alan bilgisi alma
+  const loadVolumeData = useCallback(async (labelId = 1) => {
+    if (!apiConnected) return;
+    
+    try {
+      const data = await getVolume(labelId);
+      setVolumeData(data);
+    } catch (error) {
+      console.error('Hacim bilgisi alınamadı:', error);
+      // Hata durumunda sessizce devam et
+    }
+  }, [apiConnected]);
 
   const handleImageUpload = useCallback((imageData) => {
     setImage(null);
     setDetectedRegions([]);
     setUserRegions([]);
     setZoomLevel(1);
+    setVolumeData(null);
+    setUserDrawnArea(null);
     
-    const img = new Image();
-    img.onload = () => {
-      setImage(img);
-      simulateAnalysis();
-    };
-    img.src = imageData.url;
-  }, []);
+    // Eğer backend'den yüklenecekse
+    if (apiConnected) {
+      // İlk dilimi yükle
+      setCurrentSlice(0);
+      loadSliceFromBackend(0);
+      loadVolumeData(1);
+    } else {
+      // Normal görsel yükleme
+      const img = new Image();
+      img.onload = () => {
+        setImage(img);
+        simulateAnalysis();
+      };
+      img.src = imageData.url;
+    }
+  }, [apiConnected, loadSliceFromBackend, loadVolumeData]);
 
   const handleImageClear = useCallback(() => {
+    // Blob URL'yi temizle
+    if (image && image.src && image.src.startsWith('blob:')) {
+      URL.revokeObjectURL(image.src);
+    }
+    
     setImage(null);
     setDetectedRegions([]);
     setUserRegions([]);
     setZoomLevel(1);
     setIsAnalyzing(false);
+    setVolumeData(null);
+    setUserDrawnArea(null);
+    setCurrentSlice(0);
+  }, [image]);
+  
+  // Dilim navigasyonu
+  const handleSliceChange = useCallback((newSlice) => {
+    if (newSlice < 0 || (totalSlices > 0 && newSlice >= totalSlices)) return;
+    setCurrentSlice(newSlice);
+    loadSliceFromBackend(newSlice);
+  }, [totalSlices, loadSliceFromBackend]);
+  
+  // Doktorun çizdiği bölgenin alanını hesapla (pixel cinsinden)
+  const calculateUserDrawnArea = useCallback(() => {
+    if (userRegions.length === 0) {
+      setUserDrawnArea(null);
+      return;
+    }
+    
+    let totalArea = 0;
+    
+    userRegions.forEach(region => {
+      if (region.type === 'rect') {
+        // Dikdörtgen alanı: width * height
+        totalArea += (region.width || 0) * (region.height || 0);
+      } else if (region.type === 'circle') {
+        // Daire alanı: π * r²
+        const radius = (region.width || region.height || 0) / 2;
+        totalArea += Math.PI * radius * radius;
+      } else if (region.type === 'line' && region.points) {
+        // Çizgi için basit bir yaklaşım (piksel sayısı)
+        // Gerçek implementasyon için daha karmaşık hesaplama gerekebilir
+        const points = region.points;
+        if (points.length >= 2) {
+          // Çizginin kapsadığı yaklaşık alan
+          let lineArea = 0;
+          for (let i = 0; i < points.length - 1; i++) {
+            const dx = points[i + 1].x - points[i].x;
+            const dy = points[i + 1].y - points[i].y;
+            const length = Math.sqrt(dx * dx + dy * dy);
+            // Çizgi kalınlığı varsa
+            const strokeWidth = region.strokeWidth || 2;
+            lineArea += length * strokeWidth;
+          }
+          totalArea += lineArea;
+        }
+      }
+    });
+    
+    setUserDrawnArea(Math.round(totalArea));
+  }, [userRegions]);
+  
+  // User regions değiştiğinde alanı hesapla
+  useEffect(() => {
+    calculateUserDrawnArea();
+  }, [userRegions, calculateUserDrawnArea]);
+
+  // API bağlantısını kontrol et
+  useEffect(() => {
+    const checkConnection = async () => {
+      try {
+        const connected = await testApiConnection();
+        setApiConnected(connected);
+        if (connected) {
+          setApiError(null);
+        } else {
+          setApiError('Flask API\'ye bağlanılamıyor. Backend\'in çalıştığından emin olun.');
+        }
+      } catch (error) {
+        setApiConnected(false);
+        setApiError('API bağlantı hatası');
+      }
+    };
+    
+    checkConnection();
+    // Her 30 saniyede bir bağlantıyı kontrol et
+    const interval = setInterval(checkConnection, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const simulateAnalysis = async () => {
@@ -374,6 +525,137 @@ function App() {
               </span>
             </button>
           </div>
+
+          {/* API Bağlantı Durumu */}
+          <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
+            <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
+              🔌 Backend API
+            </div>
+            <div style={{
+              backgroundColor: apiConnected ? '#166534' : '#7f1d1d',
+              borderRadius: '4px',
+              padding: '8px',
+              border: `1px solid ${apiConnected ? '#22c55e' : '#ef4444'}`
+            }}>
+              <div style={{display: 'flex', alignItems: 'center', gap: '6px', marginBottom: apiError ? '4px' : '0'}}>
+                <div style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  backgroundColor: apiConnected ? '#22c55e' : '#ef4444',
+                  boxShadow: apiConnected ? '0 0 8px #22c55e' : 'none'
+                }}></div>
+                <span style={{fontSize: '10px', color: apiConnected ? '#bbf7d0' : '#fca5a5', fontWeight: '500'}}>
+                  {apiConnected ? 'Bağlı' : 'Bağlantı Yok'}
+                </span>
+              </div>
+              {apiError && (
+                <div style={{fontSize: '9px', color: '#fca5a5', marginTop: '4px'}}>
+                  {apiError}
+                </div>
+              )}
+            </div>
+            {apiConnected && (
+              <>
+                <button
+                  onClick={() => {
+                    setCurrentSlice(0);
+                    loadSliceFromBackend(0);
+                    loadVolumeData(1);
+                  }}
+                  disabled={isLoadingSlice}
+                  style={{
+                    width: '100%',
+                    marginTop: '8px',
+                    padding: '6px 12px',
+                    backgroundColor: isLoadingSlice ? '#475569' : '#3b82f6',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    fontSize: '10px',
+                    cursor: isLoadingSlice ? 'not-allowed' : 'pointer',
+                    opacity: isLoadingSlice ? 0.6 : 1
+                  }}
+                >
+                  📥 Backend'den Yükle
+                </button>
+                {isLoadingSlice && (
+                  <div style={{
+                    marginTop: '8px',
+                    padding: '8px',
+                    backgroundColor: '#1e40af',
+                    borderRadius: '4px',
+                    border: '1px solid #3b82f6',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <div style={{
+                      width: '12px',
+                      height: '12px',
+                      border: '2px solid #60a5fa',
+                      borderTop: '2px solid transparent',
+                      borderRadius: '50%',
+                      animation: 'spin 1s linear infinite'
+                    }}></div>
+                    <span style={{fontSize: '10px', color: '#bfdbfe'}}>
+                      Dilim görüntüsü yükleniyor...
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Backend Alan/Hacim Bilgisi */}
+          {apiConnected && volumeData && (
+            <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
+              <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
+                📊 Segmentasyon Alanı
+              </div>
+              <div style={{
+                backgroundColor: '#1e40af',
+                borderRadius: '4px',
+                padding: '8px',
+                border: '1px solid #3b82f6'
+              }}>
+                <div style={{fontSize: '10px', color: '#bfdbfe', marginBottom: '4px'}}>
+                  Etiket ID: {volumeData.label_id}
+                </div>
+                <div style={{fontSize: '10px', color: '#bfdbfe', marginBottom: '4px'}}>
+                  Voksel Sayısı: {volumeData.voxel_count.toLocaleString()}
+                </div>
+                <div style={{fontSize: '10px', color: '#bfdbfe', marginBottom: '4px'}}>
+                  <strong>Alan (px²): {volumeData.voxel_count.toLocaleString()}</strong>
+                </div>
+                <div style={{fontSize: '9px', color: '#93c5fd', marginTop: '4px'}}>
+                  Hacim: {volumeData.total_volume_mm3.toFixed(2)} mm³
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Doktorun Çizdiği Alan */}
+          {userDrawnArea !== null && userDrawnArea > 0 && (
+            <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
+              <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
+                ✏️ Çizilen Alan
+              </div>
+              <div style={{
+                backgroundColor: '#7c2d12',
+                borderRadius: '4px',
+                padding: '8px',
+                border: '1px solid #f97316'
+              }}>
+                <div style={{fontSize: '12px', color: '#fed7aa', fontWeight: '600'}}>
+                  {userDrawnArea.toLocaleString()} px²
+                </div>
+                <div style={{fontSize: '9px', color: '#fdba74', marginTop: '4px'}}>
+                  {userRegions.length} bölge
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Kompakt Zoom Kontrolleri */}
           <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
