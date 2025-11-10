@@ -86,16 +86,21 @@ function App() {
     setDetectedRegions([]);
     setUserRegions([]);
     setZoomLevel(1);
-    setVolumeData(null);
     setUserDrawnArea(null);
-    
-    // Eğer backend'den yüklenecekse
-    if (apiConnected) {
+
+    const fileName = imageData?.name?.toLowerCase() || imageData?.file?.name?.toLowerCase() || '';
+    const isNiiFile = fileName.endsWith('.nii') || fileName.endsWith('.nii.gz');
+
+    if (apiConnected && isNiiFile) {
+      // Backend NII dosyası için
+      setVolumeData(null);
       // İlk dilimi yükle
       setCurrentSlice(0);
       loadSliceFromBackend(0);
       loadVolumeData(1);
     } else {
+      // Manuel görsel (JPEG/PNG vb.)
+      setVolumeData(null);
       // Normal görsel yükleme
       const img = new Image();
       img.onload = () => {
@@ -146,22 +151,46 @@ function App() {
         // Daire alanı: π * r²
         const radius = (region.width || region.height || 0) / 2;
         totalArea += Math.PI * radius * radius;
-      } else if (region.type === 'line' && region.points) {
-        // Çizgi için basit bir yaklaşım (piksel sayısı)
-        // Gerçek implementasyon için daha karmaşık hesaplama gerekebilir
+      } else if (region.type === 'line' && Array.isArray(region.points)) {
         const points = region.points;
-        if (points.length >= 2) {
-          // Çizginin kapsadığı yaklaşık alan
-          let lineArea = 0;
-          for (let i = 0; i < points.length - 1; i++) {
-            const dx = points[i + 1].x - points[i].x;
-            const dy = points[i + 1].y - points[i].y;
-            const length = Math.sqrt(dx * dx + dy * dy);
-            // Çizgi kalınlığı varsa
-            const strokeWidth = region.strokeWidth || 2;
-            lineArea += length * strokeWidth;
+        const minPointsForPolygon = 6; // En az 3 nokta (x,y çifti)
+        const CLOSE_THRESHOLD = 10; // px
+
+        if (points.length >= minPointsForPolygon) {
+          const firstX = points[0];
+          const firstY = points[1];
+          const lastX = points[points.length - 2];
+          const lastY = points[points.length - 1];
+          const distanceToStart = Math.hypot(lastX - firstX, lastY - firstY);
+
+          if (distanceToStart <= CLOSE_THRESHOLD) {
+            // Şekil kapalı kabul ediliyor - Shoelace formülü ile alan
+            let polygonArea = 0;
+            for (let i = 0; i < points.length; i += 2) {
+              const x1 = points[i];
+              const y1 = points[i + 1];
+              const nextIndex = (i + 2) % points.length;
+              const x2 = points[nextIndex];
+              const y2 = points[nextIndex + 1];
+              polygonArea += (x1 * y2) - (x2 * y1);
+            }
+            totalArea += Math.abs(polygonArea) / 2;
+            return;
           }
-          totalArea += lineArea;
+        }
+
+        // Kapalı değilse, çizgi uzunluğu * kalınlık ile yaklaşık alan
+        if (points.length >= 4) {
+          let lineLength = 0;
+          for (let i = 0; i < points.length - 2; i += 2) {
+            const x1 = points[i];
+            const y1 = points[i + 1];
+            const x2 = points[i + 2];
+            const y2 = points[i + 3];
+            lineLength += Math.hypot(x2 - x1, y2 - y1);
+          }
+          const strokeWidth = region.strokeWidth || 2;
+          totalArea += lineLength * strokeWidth;
         }
       }
     });
@@ -653,6 +682,100 @@ function App() {
                 <div style={{fontSize: '9px', color: '#fdba74', marginTop: '4px'}}>
                   {userRegions.length} bölge
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Karşılaştırma: Doktor Çizimi vs Segmentasyon */}
+          {apiConnected && volumeData && userDrawnArea !== null && userDrawnArea > 0 && (
+            <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
+              <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
+                ⚖️ Karşılaştırma
+              </div>
+              <div style={{
+                backgroundColor: '#581c87',
+                borderRadius: '4px',
+                padding: '8px',
+                border: '1px solid #a855f7'
+              }}>
+                {/* Segmentasyon Alanı */}
+                <div style={{marginBottom: '8px', paddingBottom: '8px', borderBottom: '1px solid #7c3aed'}}>
+                  <div style={{fontSize: '9px', color: '#c4b5fd', marginBottom: '4px'}}>
+                    🤖 Segmentasyon (AI)
+                  </div>
+                  <div style={{fontSize: '11px', color: '#e9d5ff', fontWeight: '600'}}>
+                    {volumeData.voxel_count.toLocaleString()} px²
+                  </div>
+                </div>
+
+                {/* Doktor Çizimi */}
+                <div style={{marginBottom: '8px', paddingBottom: '8px', borderBottom: '1px solid #7c3aed'}}>
+                  <div style={{fontSize: '9px', color: '#c4b5fd', marginBottom: '4px'}}>
+                    👨‍⚕️ Doktor Çizimi
+                  </div>
+                  <div style={{fontSize: '11px', color: '#e9d5ff', fontWeight: '600'}}>
+                    {userDrawnArea.toLocaleString()} px²
+                  </div>
+                </div>
+
+                {/* Fark ve Yüzde */}
+                {(() => {
+                  const segmentArea = volumeData.voxel_count;
+                  const doctorArea = userDrawnArea;
+                  const difference = Math.abs(segmentArea - doctorArea);
+                  const percentageDiff = segmentArea > 0 
+                    ? ((difference / segmentArea) * 100).toFixed(2)
+                    : 0;
+                  const isDoctorLarger = doctorArea > segmentArea;
+                  const matchPercentage = segmentArea > 0 && doctorArea > 0
+                    ? (Math.min(segmentArea, doctorArea) / Math.max(segmentArea, doctorArea) * 100).toFixed(2)
+                    : 0;
+
+                  return (
+                    <>
+                      <div style={{marginBottom: '6px'}}>
+                        <div style={{fontSize: '9px', color: '#c4b5fd', marginBottom: '4px'}}>
+                          📊 Fark
+                        </div>
+                        <div style={{fontSize: '11px', color: '#e9d5ff', fontWeight: '600'}}>
+                          {difference.toLocaleString()} px²
+                          <span style={{fontSize: '9px', marginLeft: '6px', color: isDoctorLarger ? '#fbbf24' : '#60a5fa'}}>
+                            ({isDoctorLarger ? 'Doktor daha büyük' : 'Segmentasyon daha büyük'})
+                          </span>
+                        </div>
+                      </div>
+
+                      <div style={{marginBottom: '6px'}}>
+                        <div style={{fontSize: '9px', color: '#c4b5fd', marginBottom: '4px'}}>
+                          📈 Yüzde Farkı
+                        </div>
+                        <div style={{fontSize: '11px', color: '#e9d5ff', fontWeight: '600'}}>
+                          %{percentageDiff}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div style={{fontSize: '9px', color: '#c4b5fd', marginBottom: '4px'}}>
+                          ✅ Uyum Oranı
+                        </div>
+                        <div style={{
+                          fontSize: '12px',
+                          color: matchPercentage >= 80 ? '#10b981' : matchPercentage >= 60 ? '#f59e0b' : '#ef4444',
+                          fontWeight: '700'
+                        }}>
+                          %{matchPercentage}
+                        </div>
+                        <div style={{
+                          fontSize: '8px',
+                          color: matchPercentage >= 80 ? '#86efac' : matchPercentage >= 60 ? '#fcd34d' : '#fca5a5',
+                          marginTop: '2px'
+                        }}>
+                          {matchPercentage >= 80 ? 'Mükemmel uyum' : matchPercentage >= 60 ? 'İyi uyum' : 'Düşük uyum'}
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           )}
