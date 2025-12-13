@@ -31,8 +31,18 @@ def load_xray_model(model_path=None, device=None):
         device = "cuda" if torch.cuda.is_available() else "cpu"
     
     if model_path is None:
-        # Varsayılan model yolu
-        model_path = Path(__file__).parent / "smp_unet_best_v1.pth"
+        # Varsayılan model yolu - önce yenisini dene, yoksa eskisini kullan
+        new_model = Path(__file__).parent / "smp_unet_best.pth"
+        old_model = Path(__file__).parent / "smp_unet_best_v1.pth"
+        
+        if new_model.exists():
+            model_path = new_model
+            print(f"✓ Yeni model bulundu: smp_unet_best.pth")
+        elif old_model.exists():
+            model_path = old_model
+            print(f"⚠ Yeni model bulunamadı, eski model kullanılıyor: smp_unet_best_v1.pth")
+        else:
+            raise FileNotFoundError("Model dosyası bulunamadı!")
     
     print(f"🔧 Model cihazı: {device}")
     print(f"📂 Model yolu: {model_path}")
