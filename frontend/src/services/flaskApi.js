@@ -63,18 +63,53 @@ export const getVolume = async (labelId) => {
 };
 
 /**
+ * 3. X-Ray Analizi
+ * @param {File} imageFile - X-Ray görüntü dosyası (DICOM, PNG, JPEG, TIFF vb)
+ * @returns {Promise<Object>} Analiz sonuçları
+ */
+export const analyzeXray = async (imageFile) => {
+  try {
+    console.log(`📤 Dosya gönderiliyor: ${imageFile.name} (${(imageFile.size / 1024).toFixed(2)} KB)`);
+    
+    const formData = new FormData();
+    formData.append('image', imageFile);
+    
+    const response = await fetch(`${API_BASE_URL}/api/analyze-xray`, {
+      method: 'POST',
+      body: formData
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    // overlay_image already contains data URL from backend
+    if (data.overlay_image && !data.overlay_image_url) {
+      data.overlay_image_url = data.overlay_image;
+    }
+    
+    console.log('✓ Analiz başarılı');
+    return data;
+  } catch (error) {
+    console.error('X-Ray analizi yapılırken hata:', error);
+    throw error;
+  }
+};
+
+/**
  * API bağlantı testi
  * @returns {Promise<boolean>} API erişilebilir mi?
  */
 export const testApiConnection = async () => {
   try {
-    // Basit bir endpoint testi - slice 0'ı deneyelim
-    const response = await fetch(`${API_BASE_URL}/api/slice/0`, {
-      method: 'HEAD' // Sadece header'ları al, body'yi alma
-    });
+    const response = await fetch(`${API_BASE_URL}/api/health`);
     return response.ok;
   } catch (error) {
+    console.error('API bağlantı hatası:', error);
     return false;
   }
-};
+};;
 

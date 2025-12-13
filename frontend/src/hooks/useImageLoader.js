@@ -21,9 +21,13 @@ export const useImageLoader = () => {
   const uploadFile = useCallback(async (file) => {
     if (!file) return;
     
-    // Dosya tipini kontrol et
-    if (!file.type.match(/^image\/(jpeg|jpg|png)$/)) {
-      setError('Sadece JPG ve PNG dosyaları desteklenir.');
+    // Dosya tipini kontrol et (JPG, PNG, DICOM)
+    const fileName = file.name.toLowerCase() + '.dcm';
+    const isDicom = fileName.endsWith('.dcm') || file.name.toLowerCase() + '.dcm';
+    const isImage = file.type.match(/^image\/(jpeg|jpg|png|tiff)$/);
+    
+    if (!isDicom && !isImage) {
+      setError('Sadece JPG, PNG, TIFF ve DICOM dosyaları desteklenir.');
       return;
     }
     
@@ -42,14 +46,29 @@ export const useImageLoader = () => {
       
       reader.onload = (e) => {
         const url = e.target.result;
-        setImageUrl(url);
-        setUploadedImage({
-          file,
-          url,
-          name: file.name,
-          size: file.size,
-          type: file.type
-        });
+        
+        // DICOM için URL oluşturma (binary data)
+        if (isDicom) {
+          setUploadedImage({
+            file,
+            url: null,  // DICOM için URL yok
+            name: file.name,
+            size: file.size,
+            type: 'application/dicom',
+            isDicom: true
+          });
+        } else {
+          // PNG/JPG/TIFF için data URL
+          setImageUrl(url);
+          setUploadedImage({
+            file,
+            url,
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            isDicom: false
+          });
+        }
         setIsLoading(false);
       };
       
@@ -58,7 +77,12 @@ export const useImageLoader = () => {
         setIsLoading(false);
       };
       
-      reader.readAsDataURL(file);
+      // DICOM dosyasını binary olarak oku
+      if (isDicom) {
+        reader.readAsArrayBuffer(file);
+      } else {
+        reader.readAsDataURL(file);
+      }
     } catch (err) {
       setError('Dosya yüklenirken hata oluştu.');
       setIsLoading(false);

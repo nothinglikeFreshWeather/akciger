@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
+import './App.css';
 import ImageUploader from './components/ImageUploader';
 import XrayCanvas from './components/XrayCanvas';
 import ColorModal from './components/ColorModal';
@@ -7,6 +8,7 @@ import CursorIndicator from './components/CursorIndicator';
 import { getMockDetections, DEFAULT_PAINTING_CONFIG } from './utils/mockData';
 import { calculateZoomScale } from './utils/canvasHelpers';
 import { getSliceImage, getVolume, testApiConnection } from './services/flaskApi';
+import XrayAnalyzer from './components/XrayAnalyzer';
 
 /**
  * Ana uygulama bileşeni - Profesyonel X-ray Analiz Arayüzü
@@ -33,6 +35,7 @@ function App() {
   const [isLoadingSlice, setIsLoadingSlice] = useState(false);
   const [apiError, setApiError] = useState(null);
   const [userDrawnArea, setUserDrawnArea] = useState(null); // Doktorun çizdiği alan (pixel)
+  const [activeTab, setActiveTab] = useState('editor'); // 'editor' veya 'analyzer'
 
   // Backend'den dilim görüntüsü yükleme
   const loadSliceFromBackend = useCallback(async (sliceIndex) => {
@@ -300,6 +303,10 @@ function App() {
     setIsColorModalOpen(false);
   }, []);
 
+  const handleAnalysisComplete = (result) => {
+    console.log('Analiz tamamlandı:', result);
+  }
+
   return (
     <div 
       style={{minHeight: '100vh', backgroundColor: '#0f172a', fontFamily: 'system-ui, sans-serif'}}
@@ -367,6 +374,12 @@ function App() {
       </header>
 
       {/* Main Layout */}
+      {/* Tab Content */}
+      {activeTab === 'analyzer' ? (
+        <div style={{padding: '24px', backgroundColor: '#0f172a', minHeight: 'calc(100vh - 60px)'}}>
+          <XrayAnalyzer />
+        </div>
+      ) : (
       <div style={{display: 'flex', height: 'calc(100vh - 60px)', width: '100vw'}}>
         {/* Sol Sidebar - Kompakt Tasarım */}
         <div style={{
@@ -993,6 +1006,7 @@ function App() {
           </div>
         </div>
       </div>
+      )}
 
       <style>{`
         @keyframes spin {
@@ -1063,6 +1077,17 @@ function App() {
         onColorChange={handleColorChange}
         onOpacityChange={handleOpacityChange}
       />
+
+      {/* Image Uploader (Yeni) */}
+      <div className="min-h-screen bg-gray-100 p-8">
+        <div className="max-w-4xl mx-auto">
+          <h1 className="text-4xl font-bold text-center mb-8">
+            🫁 Pnömotoraks Segmentasyon Sistemi
+          </h1>
+          
+          <ImageUploader onAnalysisComplete={handleAnalysisComplete} />
+        </div>
+      </div>
     </div>
   );
 }

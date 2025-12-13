@@ -1,131 +1,112 @@
-import io
-import numpy as np
-import nibabel as nib
 import matplotlib
 matplotlib.use('Agg')  # GUI olmadan çalışması için (Flask thread-safe)
+
+import io
+import base64
+import cv2
+import numpy as np
 import matplotlib.pyplot as plt
-from flask import Flask, send_file, jsonify
+from flask import Flask, send_file, jsonify, request
 from flask_cors import CORS
+
+# X-Ray Analysis imports
+from models.xray_model import load_xray_model, get_device
+from utils.xray_analysis import analyze_xray
 
 # --- Flask Uygulamasını Başlatma ---
 app = Flask(__name__)
-# CORS'u etkinleştir (React'in (genellikle 3000 portu) Flask'e (5000 portu)
-# erişebilmesi için bu şarttır)
-CORS(app)
+CORS(app)  # React'in Flask'e erişebilmesi için
 
-# --- Veriyi Yükleme (Verimli Yöntem) ---
-# API'yi her çağırdığınızda dosyayı diskten okumak çok yavaştır.
-# Bunun yerine, uygulama başlarken dosyayı BİR KEZ hafızaya yüklüyoruz.
-NII_FILE_PATH = "eng401\deneme.nii" # Buraya kendi dosya adınızı yazın
-nii_img = None
-nii_data = None
-nii_header = None
-nii_shape = None
-voxel_volume = None
+# --- X-Ray Model Yükleme ---
+xray_model = None
+xray_device = None
 
 try:
-    print(f"'{NII_FILE_PATH}' dosyası yükleniyor...")
-    nii_img = nib.load(NII_FILE_PATH)
-    nii_data = nii_img.get_fdata()
-    nii_header = nii_img.header
-    nii_shape = nii_data.shape
-    
-    # Gerçek hacim hesabı için bir vokselin hacmini hesapla (mm^3)
-    voxel_dims = nii_header.get_zooms()
-    voxel_volume = np.prod(voxel_dims)
-    
-    print(f"Dosya başarıyla yüklendi. Boyutlar: {nii_shape}")
-    print(f"Bir vokselin hacmi: {voxel_volume:.4f} mm^3")
-
-except FileNotFoundError:
-    print(f"HATA: '{NII_FILE_PATH}' dosyası bulunamadı.")
-    # Uygulamayı durdurmak yerine hata mesajı verebilirsiniz.
+    print("🔧 X-Ray model yükleniyor...")
+    xray_model, xray_device = load_xray_model(device='cpu')  # CPU kullan
+    print(f"✓ X-Ray model başarıyla yüklendi ({xray_device})")
 except Exception as e:
-    print(f"Dosya yüklenirken bir hata oluştu: {e}")
+    print(f"⚠ X-Ray model yüklenemedi: {e}")
+    print("⚠ X-Ray analiz endpoint'i çalışmayacak!")
 
-
-# --- API ENDPOINT 1: 2D DİLİMİ PNG OLARAK ALMA ---
-@app.route("/api/slice/<int:slice_index>")
-def get_slice(slice_index):
+# --- API ENDPOINT: X-RAY ANALİZİ ---
+@app.route("/api/analyze-xray", methods=["POST"])
+def analyze_xray_endpoint():
     """
-    NIfTI verisinin belirtilen Z-ekseni dilimini PNG olarak döndürür.
-    """
-    if nii_data is None:
-        return jsonify({"error": "NIfTI dosyası yüklenemedi."}), 500
-
-    # 1. Sınır Kontrolü
-    # Shape genellikle (X, Y, Z) şeklindedir
-    total_slices = nii_shape[2]
-    if not (0 <= slice_index < total_slices):
-        return jsonify({"error": f"Dilim indeksi sınır dışında. 0 ile {total_slices - 1} arasında olmalı."}), 400
-
-    # 2. İlgili 2D dilimi NumPy dizisi olarak al
-    # Z eksenindeki dilimi alıyoruz (:, :, slice_index)
-    slice_2d = nii_data[:, :, slice_index]
-
-    # 3. Matplotlib ile PNG'ye Çevirme (Hafızada)
-    buf = io.BytesIO()
+    X-Ray görüntüsünü analiz eder ve segmentasyon sonucunu döndürür.
     
-    # Görüntüyü çiz
-    # cmap='gray' tıbbi görüntüler için standarttır
-    # Görüntüyü çevirmek gerekirse slice_2d.T kullanabilirsiniz
-    plt.figure(figsize=(6, 6)) # Boyutu ayarlayabilirsiniz
-    plt.imshow(np.rot90(slice_2d), cmap='gray') # np.rot90() ile döndürmek gerekebilir
-    plt.axis('off')  # Eksenleri (çerçeveyi) kapat
+    Request:
+        - File: image (DICOM/PNG/JPEG)
     
-    # PNG olarak hafızadaki buffer'a kaydet
-    plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
-    plt.close() # Figürü hafızadan temizle (memory leak önlemi)
+    Response:
+        {
+            "pnx_ratio_percent": float,
+            "pnx_ratio_vs_lung_percent": float,
+            "lung_ratio_percent": float,
+            "dice_lung": float,
+            "dice_pnx": float,
+            "overlay_image": base64_encoded_png
+        }
+    """
     
-    # Buffer'ın başına dön
-    buf.seek(0)
-
-    # 4. PNG dosyasını HTTP yanıtı olarak gönder
-    return send_file(buf, mimetype='image/png')
-
-
-# --- API ENDPOINT 2: HACİM HESAPLAMA ---
-# --- API ENDPOINT 2: HACİM HESAPLAMA (DÜZELTİLMİŞ VERSİYON) ---
-@app.route("/api/volume/<int:label_id>")
-def get_volume(label_id):
-    """
-    Belirtilen etikete (label) ait toplam hacmi hesaplar.
-    """
-    if nii_data is None:
-        return jsonify({"error": "NIfTI dosyası yüklenemedi."}), 500
-
-    # 1. İstenen etikete sahip voksel sayısını bul
+    if xray_model is None:
+        return jsonify({"error": "Model yüklenmedi"}), 503
+    
+    # Dosya kontrol et
+    if 'image' not in request.files:
+        return jsonify({"error": "Dosya gönderilmedi"}), 400
+    
+    file = request.files['image']
+    
+    if file.filename == '':
+        return jsonify({"error": "Dosya seçilmedi"}), 400
+    
     try:
-        voxel_count = np.sum(nii_data.astype(int) == label_id)
+        # Dosya bytesını oku
+        image_bytes = file.read()
+        print(f"📥 Dosya alındı: {file.filename} ({len(image_bytes)} bytes)")
         
-        if voxel_count == 0:
-             return jsonify({
-                "error": f"{label_id} ID'li etiket veride bulunamadı.",
-                "label_id": label_id,
-            }), 404
-
-        # 2. Gerçek hacmi hesapla
-        total_volume_mm3 = voxel_count * voxel_volume
-
-        # 3. Sonucu JSON olarak döndür
-        # --- DÜZELTME BURADA ---
-        # NumPy tiplerini (np.int64, np.float32) standart Python
-        # tiplerine (int, float) dönüştürüyoruz.
+        # Analiz yap (tüm formatları try-catch ile yakala)
+        result = analyze_xray(image_bytes, xray_model, xray_device)
         
+        # Overlay görselini base64'e çevir
+        _, buffer = cv2.imencode('.png', result['overlay_image'])
+        overlay_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        # Response hazırla
         response_data = {
-            "label_id": int(label_id),
-            "voxel_count": int(voxel_count),
-            "voxel_volume_mm3": float(voxel_volume),
-            "total_volume_mm3": float(total_volume_mm3)
+            "dice_lung": result['dice_lung'],
+            "dice_pnx": result['dice_pnx'],
+            "pnx_ratio_percent": result['pnx_ratio_percent'],
+            "pnx_ratio_vs_lung_percent": result['pnx_ratio_vs_lung_percent'],
+            "lung_ratio_percent": result['lung_ratio_percent'],
+            "overlay_image": f"data:image/png;base64,{overlay_base64}"
         }
         
-        return jsonify(response_data)
+        print(f"✓ Analiz tamamlandı")
+        return jsonify(response_data), 200
         
     except Exception as e:
-        return jsonify({"error": f"Hacim hesaplanırken hata: {e}"}), 500
+        print(f"❌ Hata: {str(e)[:100]}")
+        return jsonify({"error": str(e)}), 500
 
+# --- Health Check ---
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """API sağlıklı mı kontrol et."""
+    return jsonify({
+        "status": "ok",
+        "model_loaded": xray_model is not None,
+        "device": xray_device
+    }), 200
 
 # --- Uygulamayı Çalıştırma ---
 if __name__ == '__main__':
-    # 'debug=True' geliştirme aşamasında çok kullanışlıdır
-    app.run(debug=True, port=5000)
+    print("\n" + "="*50)
+    print("🫁 Pnömotoraks Analiz Sistemi")
+    print("="*50)
+    print(f"📡 Flask server başlatılıyor...")
+    print(f"🌐 http://127.0.0.1:5000")
+    print("="*50 + "\n")
+    
+    app.run(debug=True, port=5000, use_reloader=False)
