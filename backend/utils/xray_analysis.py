@@ -2,6 +2,7 @@ import cv2
 import torch
 import numpy as np
 import pydicom
+import matplotlib.pyplot as plt
 from io import BytesIO
 
 def analyze_xray(image_bytes, model, device, img_size=256):
@@ -14,78 +15,71 @@ def analyze_xray(image_bytes, model, device, img_size=256):
     print("🔍 analyze_xray fonksiyonu başladı")
     print("="*50)
     
-    # --- 1. Görseli oku ---
-    image_gray = None 
+    # --- 1. Görseli oku (Jupyter notebook'taki read_dicom_to_rgb_uint8 gibi) ---
+    img_rgb_uint8 = None
     try:
         ds = pydicom.dcmread(BytesIO(image_bytes))
         img_array = ds.pixel_array.astype(np.float32)
+        
+        # Rescale slope/intercept if present (Jupyter notebook'taki gibi)
+        slope = float(getattr(ds, "RescaleSlope", 1.0))
+        intercept = float(getattr(ds, "RescaleIntercept", 0.0))
+        img_array = img_array * slope + intercept
+        
+        # Min-max scale to uint8 (Jupyter notebook'taki gibi)
         mi, ma = img_array.min(), img_array.max()
         if ma != mi:
-            image_gray = ((img_array - mi) / (ma - mi) * 255).astype(np.uint8)
+            img8 = ((img_array - mi) / (ma - mi) * 255).astype(np.uint8)
         else:
-            image_gray = np.zeros_like(img_array, dtype=np.uint8)
-        print("✓ DICOM olarak okundu")
+            img8 = np.zeros_like(img_array, dtype=np.uint8)
+        
+        # Replicate to 3 channels (RGB) for pretrained 2D encoders (Jupyter notebook'taki gibi)
+        img_rgb_uint8 = np.repeat(img8[..., None], 3, axis=-1)  # (H, W, 3)
+        print("✓ DICOM olarak okundu (RescaleSlope/Intercept uygulandı, RGB'ye çevrildi)")
     except Exception as e:
         print(f"⚠ DICOM okunamadı: {e}")
         try:
             nparr = np.frombuffer(image_bytes, np.uint8)
             img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if img_bgr is None: raise ValueError("Görsel okunamadı")
-            image_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-            print("✓ PNG/JPEG olarak okundu")
+            img_rgb_uint8 = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)  # BGR -> RGB
+            print("✓ PNG/JPEG olarak okundu (RGB)")
         except Exception as e_img:
             raise ValueError(f"Format desteklenmiyor: {e_img}")
 
-    if image_gray is None: raise ValueError("Görsel yüklenemedi")
-    print(f"📐 Orijinal boyut: {image_gray.shape}")
+    if img_rgb_uint8 is None: raise ValueError("Görsel yüklenemedi")
+    orig_h, orig_w = img_rgb_uint8.shape[:2]
+    print(f"📐 Orijinal boyut: {img_rgb_uint8.shape}")
 
-    # --- 1.5. Rotasyon Kontrolü (Giriş) ---
-    # Orijinal boyutları sakla
-    orig_h, orig_w = image_gray.shape
-    rotated = False
+    # --- 2. Preprocessing (Resize & Normalize - Jupyter notebook'taki gibi) ---
+    # Resize to img_size (Jupyter notebook'taki transform gibi)
+    print(f"🔧 Resizing: {img_rgb_uint8.shape[:2]} → {img_size}x{img_size}")
+    img_resized = cv2.resize(img_rgb_uint8, (img_size, img_size), interpolation=cv2.INTER_LINEAR)
     
-    # Eğer görüntü yataysa (Width > Height), dikey yap
-    if orig_w > orig_h:
-        print(f"🔄 Yatay görüntü tespit edildi ({orig_w}x{orig_h}), döndürülüyor...")
-        image_gray = cv2.rotate(image_gray, cv2.ROTATE_90_CLOCKWISE)
-        rotated = True
-        print(f"✓ Rotasyon tamamlandı. Yeni boyut: {image_gray.shape}")
-    else:
-        print(f"✓ Zaten dikey görüntü ({orig_h}x{orig_w})")
-
-    # --- 2. Preprocessing (Resize & Normalize) ---
-    # Model 256x256 ile eğitildi, o yüzden MUTLAKA 256x256'ye resize et!
-    print(f"🔧 Resizing: {image_gray.shape} → {img_size}x{img_size} (Model input için)")
-    img_resized = cv2.resize(image_gray, (img_size, img_size), interpolation=cv2.INTER_LINEAR)
-    img_for_overlay = img_resized.copy()  # Overlay'de kullan için kopyala
-    print(f"✓ Resize tamamlandı")
+    # ImageNet normalization (Jupyter notebook'taki val_tfms gibi)
+    # mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225)
+    img_normalized = img_resized.astype(np.float32) / 255.0
+    mean = np.array([0.485, 0.456, 0.406])
+    std = np.array([0.229, 0.224, 0.225])
+    img_normalized = (img_normalized - mean) / std
+    print(f"✓ ImageNet normalization uygulandı")
     
-    # Normalizasyon: 0-255 → 0-1
-    img_float = img_resized.astype(np.float32) / 255.0
-    print(f"✓ Normalization tamamlandı (min={img_float.min():.3f}, max={img_float.max():.3f})")
-    
-    # Grayscale -> RGB (3 channel) yapıp normalize et
-    img_3ch = np.stack([img_float]*3, axis=-1) # (256, 256, 3)
-    print(f"✓ 3-channel yapıldı: {img_3ch.shape}")
-    
-    # Tensor (C, H, W)
-    x_tensor = torch.from_numpy(img_3ch.transpose(2, 0, 1)).unsqueeze(0).float().to(device)
+    # Tensor (C, H, W) - Jupyter notebook'taki ToTensorV2 gibi
+    x_tensor = torch.from_numpy(img_normalized.transpose(2, 0, 1)).float().unsqueeze(0).to(device)
     print(f"✓ Tensor oluşturuldu: {x_tensor.shape}")
+    
+    # Orijinal görüntüyü sakla (matplotlib için - normalize edilmemiş)
+    img_for_display = img_resized.copy()  # (H, W, 3) uint8 RGB
 
-    # --- 3. Inference ---
+    # --- 3. Inference --- (Jupyter notebook'taki visualize_predictions gibi)
     print("🤖 Model inference başladı...")
     model.eval()
     with torch.no_grad():
-        logits = model(x_tensor)
+        logits = model(x_tensor)  # [B, num_classes, H, W]
         print(f"✓ Logits shape: {logits.shape}")
-        probs = torch.softmax(logits, dim=1)
-        pred_mask_small = torch.argmax(probs, dim=1).squeeze().cpu().numpy().astype(np.uint8)
-        print(f"✓ Mask shape: {pred_mask_small.shape}, unique values: {np.unique(pred_mask_small)}")
-    
-    # --- 4. Mask 256x256'de kalacak (model output boyutu) ---
-    # Maskei geri büyütmeye gerek YOK! Model 256x256 için eğitildi
-    print(f"✓ Mask boyutu: {pred_mask_small.shape} (Model output)")
-    pred_mask = pred_mask_small.copy()  # Direkt kullan
+        probs = torch.softmax(logits, dim=1)[0].cpu().numpy()  # [num_classes, H, W] - Jupyter notebook'taki gibi
+        pred_mask = probs.argmax(axis=0).astype(np.uint8)  # [H, W] - Jupyter notebook'taki gibi
+        print(f"✓ Mask shape: {pred_mask.shape}, unique values: {np.unique(pred_mask)}")
 
     # --- 5. Hesaplamalar ---
     lung_mask = (pred_mask == 1)
@@ -101,23 +95,62 @@ def analyze_xray(image_bytes, model, device, img_size=256):
     
     print(f"📊 Sonuçlar: Akciğer {lung_ratio:.2f}% | Pnömotoraks {pnx_ratio:.2f}%")
     
-    # --- 6. Overlay Oluşturma (256x256'de) ---
-    # img_for_overlay zaten 256x256
-    print(f"🎨 Overlay oluşturuluyor ({img_for_overlay.shape})...")
-    overlay = cv2.cvtColor(img_for_overlay, cv2.COLOR_GRAY2BGR)
-    overlay[lung_mask] = [0, 255, 0] # Yeşil
-    overlay[pnx_mask] = [0, 0, 255]  # Kırmızı
-    print(f"✓ Overlay oluşturuldu: {overlay.shape}")
+    # --- 6. Overlay Oluşturma (Matplotlib ile - sağa koy ve 90 derece çevir) ---
+    print(f"🎨 Overlay oluşturuluyor (Matplotlib ile, sağa ve 90° döndürülmüş)...")
     
-    # --- 7. Rotasyonu Geri Al (Yatay görseller için) ---
-    if rotated:
-        print("🔄 Overlay orijinal yönüne (Yatay) geri çevriliyor...")
-        overlay = cv2.rotate(overlay, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        print(f"✓ Final overlay shape: {overlay.shape}")
+    # Orijinal görüntüyü grayscale'e çevir (görüntüleme için)
+    if len(img_for_display.shape) == 3:
+        img_display_gray = np.mean(img_for_display, axis=2).astype(np.uint8)
+    else:
+        img_display_gray = img_for_display.astype(np.uint8)
     
-    # --- 8. Frontend için optimize et (isteğe bağlı küçültme) ---
-    # Overlay zaten 256x256 veya 512x512 max
-    overlay_display = overlay
+    # Normalize et (Jupyter notebook'taki gibi: (img - img.min()) / (img.max() - img.min() + 1e-6))
+    img_norm = (img_display_gray.astype(np.float32) - img_display_gray.min()) / (img_display_gray.max() - img_display_gray.min() + 1e-6)
+    
+    # Matplotlib figure oluştur - iki subplot yan yana
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10), dpi=100)
+    
+    # Sol: Orijinal görüntü
+    ax1.axis('off')
+    ax1.imshow(img_norm, cmap='gray')
+    
+    # Sağ: Mask overlay (arka plan görüntüsü ile)
+    ax2.axis('off')
+    # Orijinal görüntüyü arka plan olarak göster (döndürülmemiş)
+    ax2.imshow(img_norm, cmap='gray')
+    
+    # Sadece mask'i 90 derece sola döndür (saat yönünün tersine)
+    pred_mask_rotated = np.rot90(pred_mask, k=3)  # k=3 saat yönünün tersine 90 derece (sola)
+    
+    # Mask'i biraz sağa ve aşağı kaydır (offset)
+    offset_right = 5  # Sağa kaydırma (piksel)
+    offset_down = 5   # Aşağı kaydırma (piksel)
+    
+    # Mask overlay'lerini oluştur ve kaydır
+    # Lung mask'i yeşil overlay olarak
+    lung_overlay = np.zeros_like(pred_mask_rotated, dtype=np.float32)
+    lung_mask_shifted = np.roll(pred_mask_rotated, (offset_down, offset_right), axis=(0, 1))
+    lung_overlay[lung_mask_shifted == 1] = 1.0
+    if lung_overlay.sum() > 0:
+        ax2.imshow(lung_overlay, cmap='Greens', alpha=0.4, vmin=0, vmax=1)
+    
+    # Pnömotoraks mask'i kırmızı overlay olarak
+    pnx_overlay = np.zeros_like(pred_mask_rotated, dtype=np.float32)
+    pnx_mask_shifted = np.roll(pred_mask_rotated, (offset_down, offset_right), axis=(0, 1))
+    pnx_overlay[pnx_mask_shifted == 2] = 1.0
+    if pnx_overlay.sum() > 0:
+        ax2.imshow(pnx_overlay, cmap='Reds', alpha=0.4, vmin=0, vmax=1)
+    
+    plt.tight_layout(pad=0)
+    
+    # Figure'ı numpy arrar yap 
+    fig.canvas.draw()
+    overlay_rgb = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    overlay_rgb = overlay_rgb.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    plt.close(fig)
+    
+    overlay_display = overlay_rgb
+    print(f"✓ Overlay oluşturuldu (Matplotlib ile, sağa ve 90° döndürülmüş): {overlay_display.shape}")
     
     print("="*50)
     print("✓ analyze_xray tamamlandı")

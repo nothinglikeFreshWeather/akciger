@@ -42,7 +42,7 @@ const ColorModal = ({
         left: 0,
         right: 0,
         bottom: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -52,29 +52,29 @@ const ColorModal = ({
     >
       <div
         style={{
-          backgroundColor: '#1e293b',
-          borderRadius: '12px',
+          backgroundColor: '#ffffff',
+          borderRadius: '4px',
           padding: '20px',
-          border: '1px solid #334155',
-          boxShadow: '0 20px 40px rgba(0,0,0,0.5)',
+          border: '2px solid #2B579A',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
           minWidth: '300px',
           maxWidth: '400px'
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Modal Header */}
+        {/* Modal Header - Word 2013 Style */}
         <div style={{
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
           marginBottom: '20px',
-          borderBottom: '1px solid #334155',
+          borderBottom: '2px solid #2B579A',
           paddingBottom: '12px'
         }}>
           <h3 style={{
             fontSize: '16px',
             fontWeight: '600',
-            color: '#f1f5f9',
+            color: '#2B579A',
             margin: 0
           }}>
             🎨 Renk Seçimi
@@ -83,33 +83,35 @@ const ColorModal = ({
             onClick={onClose}
             style={{
               background: 'none',
-              border: 'none',
-              color: '#94a3b8',
+              border: '1px solid transparent',
+              color: '#666666',
               fontSize: '20px',
               cursor: 'pointer',
-              padding: '4px',
+              padding: '4px 8px',
               borderRadius: '4px',
               transition: 'all 0.2s'
             }}
             onMouseEnter={(e) => {
-              e.target.style.backgroundColor = '#374151';
-              e.target.style.color = '#f1f5f9';
+              e.target.style.backgroundColor = '#F5F5F5';
+              e.target.style.color = '#333333';
+              e.target.style.borderColor = '#D0D0D0';
             }}
             onMouseLeave={(e) => {
               e.target.style.backgroundColor = 'transparent';
-              e.target.style.color = '#94a3b8';
+              e.target.style.color = '#666666';
+              e.target.style.borderColor = 'transparent';
             }}
           >
             ×
           </button>
         </div>
 
-        {/* Renk Paletleri */}
+        {/* Renk Paletleri - Word 2013 Style */}
         <div style={{marginBottom: '20px'}}>
           <div style={{
             fontSize: '14px',
             fontWeight: '500',
-            color: '#cbd5e1',
+            color: '#333333',
             marginBottom: '12px'
           }}>
             Renk Paleti
@@ -123,12 +125,12 @@ const ColorModal = ({
                   position: 'relative',
                   width: '100%',
                   height: '40px',
-                  borderRadius: '8px',
-                  border: selectedColor === color.value ? '3px solid #60a5fa' : '2px solid #4b5563',
+                  borderRadius: '4px',
+                  border: selectedColor === color.value ? '3px solid #2B579A' : '2px solid #D0D0D0',
                   backgroundColor: color.value,
                   cursor: 'pointer',
                   transition: 'all 0.2s',
-                  boxShadow: selectedColor === color.value ? '0 0 12px rgba(96,165,250,0.5)' : 'none'
+                  boxShadow: selectedColor === color.value ? '0 0 8px rgba(43,87,154,0.4)' : 'none'
                 }}
                 title={color.name}
               >
@@ -160,7 +162,7 @@ const ColorModal = ({
           </div>
         </div>
 
-        {/* Şeffaflık Kontrolü */}
+        {/* Şeffaflık Kontrolü - Word 2013 Style */}
         <div style={{marginBottom: '20px'}}>
           <div style={{
             display: 'flex',
@@ -168,16 +170,17 @@ const ColorModal = ({
             alignItems: 'center',
             marginBottom: '8px'
           }}>
-            <span style={{fontSize: '14px', color: '#cbd5e1', fontWeight: '500'}}>
+            <span style={{fontSize: '14px', color: '#333333', fontWeight: '500'}}>
               Şeffaflık
             </span>
             <span style={{
               fontSize: '14px',
-              color: '#3b82f6',
+              color: '#2B579A',
               fontWeight: '600',
-              backgroundColor: '#1e293b',
+              backgroundColor: '#E6F2FF',
               padding: '4px 12px',
-              borderRadius: '6px'
+              borderRadius: '4px',
+              border: '1px solid #2B579A'
             }}>
               {Math.round(opacity * 100)}%
             </span>
@@ -197,17 +200,18 @@ const ColorModal = ({
               cursor: 'pointer',
               WebkitAppearance: 'none',
               appearance: 'none',
-              background: `linear-gradient(to right, ${selectedColor} 0%, ${selectedColor} ${opacity * 100}%, #374151 ${opacity * 100}%, #374151 100%)`
+              background: `linear-gradient(to right, ${selectedColor} 0%, ${selectedColor} ${opacity * 100}%, #D0D0D0 ${opacity * 100}%, #D0D0D0 100%)`,
+              border: '1px solid #C0C0C0'
             }}
           />
         </div>
 
-        {/* Seçili Renk Önizlemesi */}
+        {/* Seçili Renk Önizlemesi - Word 2013 Style */}
         <div style={{
-          backgroundColor: '#374151',
-          borderRadius: '8px',
+          backgroundColor: '#F5F5F5',
+          borderRadius: '4px',
           padding: '16px',
-          border: '1px solid #4b5563',
+          border: '1px solid #D0D0D0',
           marginBottom: '20px'
         }}>
           <div style={{display: 'flex', alignItems: 'center', gap: '16px'}}>
@@ -215,25 +219,25 @@ const ColorModal = ({
               style={{
                 width: '60px',
                 height: '60px',
-                borderRadius: '8px',
+                borderRadius: '4px',
                 backgroundColor: selectedColor,
                 opacity: opacity,
-                border: '2px solid #64748b',
-                boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.2)'
+                border: '2px solid #C0C0C0',
+                boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.1)'
               }}
             ></div>
             <div>
-              <div style={{fontSize: '14px', color: '#cbd5e1', fontFamily: 'monospace', marginBottom: '4px'}}>
+              <div style={{fontSize: '14px', color: '#333333', fontFamily: 'monospace', marginBottom: '4px', fontWeight: '600'}}>
                 {selectedColor.toUpperCase()}
               </div>
-              <div style={{fontSize: '12px', color: '#94a3b8'}}>
+              <div style={{fontSize: '12px', color: '#666666'}}>
                 Opaklık: {Math.round(opacity * 100)}%
               </div>
             </div>
           </div>
         </div>
 
-        {/* Modal Footer */}
+        {/* Modal Footer - Word 2013 Style */}
         <div style={{
           display: 'flex',
           justifyContent: 'flex-end',
@@ -243,19 +247,21 @@ const ColorModal = ({
             onClick={onClose}
             style={{
               padding: '10px 20px',
-              backgroundColor: '#374151',
-              color: '#cbd5e1',
-              border: '1px solid #4b5563',
-              borderRadius: '6px',
+              backgroundColor: '#ffffff',
+              color: '#333333',
+              border: '1px solid #D0D0D0',
+              borderRadius: '4px',
               fontSize: '14px',
               cursor: 'pointer',
               transition: 'all 0.2s'
             }}
             onMouseEnter={(e) => {
-              e.target.style.backgroundColor = '#4b5563';
+              e.target.style.backgroundColor = '#F5F5F5';
+              e.target.style.borderColor = '#2B579A';
             }}
             onMouseLeave={(e) => {
-              e.target.style.backgroundColor = '#374151';
+              e.target.style.backgroundColor = '#ffffff';
+              e.target.style.borderColor = '#D0D0D0';
             }}
           >
             İptal
@@ -264,20 +270,20 @@ const ColorModal = ({
             onClick={onClose}
             style={{
               padding: '10px 20px',
-              backgroundColor: '#3b82f6',
+              backgroundColor: '#2B579A',
               color: 'white',
-              border: 'none',
-              borderRadius: '6px',
+              border: '1px solid #1E4D72',
+              borderRadius: '4px',
               fontSize: '14px',
               cursor: 'pointer',
               fontWeight: '500',
               transition: 'all 0.2s'
             }}
             onMouseEnter={(e) => {
-              e.target.style.backgroundColor = '#2563eb';
+              e.target.style.backgroundColor = '#1E4D72';
             }}
             onMouseLeave={(e) => {
-              e.target.style.backgroundColor = '#3b82f6';
+              e.target.style.backgroundColor = '#2B579A';
             }}
           >
             Tamam

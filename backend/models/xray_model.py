@@ -8,12 +8,12 @@ import torch
 import segmentation_models_pytorch as smp
 from pathlib import Path
 
-# Model konfigürasyonu
+# Model konfigürasyonu - Jupyter notebook'taki CFG ile aynı
 MODEL_config = {
     "encoder_name": "resnet34",
+    "encoder_weights": "imagenet",  # Jupyter'da "imagenet" olarak ayarlanmış
     "in_channels": 3,
-    "classes": 3,
-    "weights": None
+    "classes": 3
 }
 
 def load_xray_model(model_path=None, device=None):
@@ -47,15 +47,18 @@ def load_xray_model(model_path=None, device=None):
     print(f"🔧 Model cihazı: {device}")
     print(f"📂 Model yolu: {model_path}")
     
-    # Model mimarisi tanımla
+    # Model mimarisi tanımla - Jupyter notebook'taki gibi
     model = smp.Unet(
         encoder_name=MODEL_config["encoder_name"],
-        encoder_weights=MODEL_config["weights"],
+        encoder_weights=MODEL_config["encoder_weights"],
         in_channels=MODEL_config["in_channels"],
         classes=MODEL_config["classes"]
     )
     
-    # Ağırlıkları yükle
+    # Model'i önce device'a al (Jupyter notebook'taki sıra gibi)
+    model = model.to(device)
+    
+    # Ağırlıkları yükle (Jupyter notebook'taki gibi: torch.load sonra load_state_dict)
     try:
         state_dict = torch.load(str(model_path), map_location=device)
         model.load_state_dict(state_dict)
@@ -65,7 +68,8 @@ def load_xray_model(model_path=None, device=None):
     except Exception as e:
         raise RuntimeError(f"Model yüklenirken hata: {e}")
     
-    model.to(device)
+    # Model'i tekrar device'a al ve eval moduna geçir (Jupyter notebook'taki gibi)
+    model = model.to(device)
     model.eval()
     
     return model, device

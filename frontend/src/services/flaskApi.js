@@ -100,6 +100,37 @@ export const analyzeXray = async (imageFile) => {
 };
 
 /**
+ * 4. Model Yükleme (.pth dosyası)
+ * @param {File} modelFile - Model dosyası (.pth)
+ * @returns {Promise<Object>} Yükleme sonucu
+ */
+export const loadModel = async (modelFile) => {
+  try {
+    console.log(`📤 Model dosyası gönderiliyor: ${modelFile.name} (${(modelFile.size / 1024).toFixed(2)} KB)`);
+    
+    const formData = new FormData();
+    formData.append('model', modelFile);
+    
+    const response = await fetch(`${API_BASE_URL}/api/load-model`, {
+      method: 'POST',
+      body: formData
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    console.log('✓ Model başarıyla yüklendi');
+    return data;
+  } catch (error) {
+    console.error('Model yüklenirken hata:', error);
+    throw error;
+  }
+};
+
+/**
  * API bağlantı testi
  * @returns {Promise<boolean>} API erişilebilir mi?
  */
@@ -111,5 +142,54 @@ export const testApiConnection = async () => {
     console.error('API bağlantı hatası:', error);
     return false;
   }
-};;
+};
+
+/**
+ * Mevcut modelleri listele
+ * @returns {Promise<Object>} Model listesi ve mevcut model
+ */
+export const listModels = async () => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/models`);
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Model listesi alınırken hata:', error);
+    throw error;
+  }
+};
+
+/**
+ * Model seç
+ * @param {string} modelName - Seçilecek model adı
+ * @returns {Promise<Object>} Model yükleme sonucu
+ */
+export const selectModel = async (modelName) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/select-model`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ model_name: modelName })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Model seçilirken hata:', error);
+    throw error;
+  }
+};
 

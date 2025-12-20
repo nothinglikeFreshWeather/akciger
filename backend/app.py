@@ -6,6 +6,9 @@ import base64
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import os
+import tempfile
+from pathlib import Path
 from flask import Flask, send_file, jsonify, request
 from flask_cors import CORS
 
@@ -89,6 +92,162 @@ def analyze_xray_endpoint():
     except Exception as e:
         print(f"❌ Hata: {str(e)[:100]}")
         return jsonify({"error": str(e)}), 500
+
+# --- API ENDPOINT: MODEL YÜKLEME ---
+@app.route("/api/load-model", methods=["POST"])
+def load_model_endpoint():
+    """
+    Frontend'den .pth model dosyası yükler ve modeli yeniden başlatır.
+    
+    Request:
+        - File: model (.pth dosyası)
+    
+    Response:
+        {
+            "status": "success",
+            "message": "Model başarıyla yüklendi",
+            "model_path": str,
+            "device": str
+        }
+    """
+    global xray_model, xray_device
+    
+    # Dosya kontrol et
+    if 'model' not in request.files:
+        return jsonify({"error": "Model dosyası gönderilmedi"}), 400
+    
+    file = request.files['model']
+    
+    if file.filename == '':
+        return jsonify({"error": "Dosya seçilmedi"}), 400
+    
+    # .pth uzantısı kontrol et
+    if not file.filename.lower().endswith('.pth'):
+        return jsonify({"error": "Sadece .pth dosyaları desteklenir"}), 400
+    
+    try:
+        # Geçici dosya olarak kaydet
+        temp_dir = tempfile.gettempdir()
+        temp_model_path = os.path.join(temp_dir, f"uploaded_model_{file.filename}")
+        
+        # Dosyayı kaydet
+        file.save(temp_model_path)
+        print(f"📥 Model dosyası alındı: {file.filename} ({os.path.getsize(temp_model_path)} bytes)")
+        print(f"📂 Geçici dosya yolu: {temp_model_path}")
+        
+        # Modeli yükle
+        print("🔧 Model yükleniyor...")
+        xray_model, xray_device = load_xray_model(model_path=temp_model_path, device='cpu')
+        print(f"✓ Model başarıyla yüklendi ({xray_device})")
+        
+        return jsonify({
+            "status": "success",
+            "message": "Model başarıyla yüklendi",
+            "model_path": temp_model_path,
+            "device": xray_device
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Model yükleme hatası: {str(e)}")
+        return jsonify({"error": f"Model yüklenirken hata: {str(e)}"}), 500
+
+# --- API ENDPOINT: MEVCUT MODELLERİ LİSTELE ---
+@app.route("/api/models", methods=["GET"])
+def list_models():
+    """
+    Backend'deki mevcut model dosyalarını listeler.
+    
+    Response:
+        {
+            "models": [
+                {"name": "smp_unet_best.pth", "path": "models/smp_unet_best.pth"},
+                ...
+            ],
+            "current_model": "smp_unet_best.pth"
+        }
+    """
+    try:
+        models_dir = Path(__file__).parent / "models"
+        model_files = []
+        
+        # .pth dosyalarını bul
+        if models_dir.exists():
+            for model_file in models_dir.glob("*.pth"):
+                model_files.append({
+                    "name": model_file.name,
+                    "path": str(model_file.relative_to(Path(__file__).parent))
+                })
+        
+        # Mevcut model dosyasını bul
+        current_model = None
+        if xray_model is not None:
+            # Model yolu bilgisi yoksa, varsayılan modelleri kontrol et
+            new_model = models_dir / "smp_unet_best.pth"
+            old_model = models_dir / "smp_unet_best_v1.pth"
+            
+            if new_model.exists():
+                current_model = new_model.name
+            elif old_model.exists():
+                current_model = old_model.name
+        
+        return jsonify({
+            "models": model_files,
+            "current_model": current_model
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Model listesi alınırken hata: {str(e)}")
+        return jsonify({"error": f"Model listesi alınamadı: {str(e)}"}), 500
+
+# --- API ENDPOINT: MODEL SEÇ ---
+@app.route("/api/select-model", methods=["POST"])
+def select_model():
+    """
+    Backend'deki mevcut modellerden birini seçer ve yükler.
+    
+    Request:
+        {
+            "model_name": "smp_unet_best.pth"
+        }
+    
+    Response:
+        {
+            "status": "success",
+            "message": "Model başarıyla yüklendi",
+            "model_name": str,
+            "device": str
+        }
+    """
+    global xray_model, xray_device
+    
+    try:
+        data = request.get_json()
+        if not data or 'model_name' not in data:
+            return jsonify({"error": "Model adı gönderilmedi"}), 400
+        
+        model_name = data['model_name']
+        models_dir = Path(__file__).parent / "models"
+        model_path = models_dir / model_name
+        
+        # Model dosyası var mı kontrol et
+        if not model_path.exists():
+            return jsonify({"error": f"Model dosyası bulunamadı: {model_name}"}), 404
+        
+        # Modeli yükle
+        print(f"🔧 Model yükleniyor: {model_name}")
+        xray_model, xray_device = load_xray_model(model_path=str(model_path), device='cpu')
+        print(f"✓ Model başarıyla yüklendi ({xray_device})")
+        
+        return jsonify({
+            "status": "success",
+            "message": "Model başarıyla yüklendi",
+            "model_name": model_name,
+            "device": xray_device
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Model seçme hatası: {str(e)}")
+        return jsonify({"error": f"Model yüklenirken hata: {str(e)}"}), 500
 
 # --- Health Check ---
 @app.route("/api/health", methods=["GET"])

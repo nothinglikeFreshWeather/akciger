@@ -1,14 +1,9 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import './App.css';
-import ImageUploader from './components/ImageUploader';
 import XrayCanvas from './components/XrayCanvas';
-import ColorModal from './components/ColorModal';
 import ZoomControls from './components/ZoomControls';
-import CursorIndicator from './components/CursorIndicator';
-import { getMockDetections, DEFAULT_PAINTING_CONFIG } from './utils/mockData';
 import { calculateZoomScale } from './utils/canvasHelpers';
-import { getSliceImage, getVolume, testApiConnection } from './services/flaskApi';
-import XrayAnalyzer from './components/XrayAnalyzer';
+import { getSliceImage, getVolume, testApiConnection, analyzeXray, listModels, selectModel } from './services/flaskApi';
 
 /**
  * Ana uygulama bileşeni - Profesyonel X-ray Analiz Arayüzü
@@ -16,16 +11,11 @@ import XrayAnalyzer from './components/XrayAnalyzer';
 function App() {
   // State yönetimi
   const [image, setImage] = useState(null);
-  const [detectedRegions, setDetectedRegions] = useState([]);
-  const [userRegions, setUserRegions] = useState([]);
-  const [paintingConfig, setPaintingConfig] = useState(DEFAULT_PAINTING_CONFIG);
+  const [originalImage, setOriginalImage] = useState(null); // Orijinal görüntü
+  const [modelImage, setModelImage] = useState(null); // Model analiz sonucu
+  const [activeTab, setActiveTab] = useState('original'); // 'original' veya 'model'
   const [zoomLevel, setZoomLevel] = useState(1);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [selectedTool, setSelectedTool] = useState('pan'); // rect, circle, pen, eraser, pan
-  const [canvasCursor, setCanvasCursor] = useState('default');
-  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
-  const [showCursorIndicator, setShowCursorIndicator] = useState(false);
-  const [isColorModalOpen, setIsColorModalOpen] = useState(false);
   
   // Backend API state'leri
   const [apiConnected, setApiConnected] = useState(false);
@@ -35,7 +25,13 @@ function App() {
   const [isLoadingSlice, setIsLoadingSlice] = useState(false);
   const [apiError, setApiError] = useState(null);
   const [userDrawnArea, setUserDrawnArea] = useState(null); // Doktorun çizdiği alan (pixel)
-  const [activeTab, setActiveTab] = useState('editor'); // 'editor' veya 'analyzer'
+  const [isDragging, setIsDragging] = useState(false);
+  const [originalImageFile, setOriginalImageFile] = useState(null); // Orijinal yüklenen dosya
+  const [availableModels, setAvailableModels] = useState([]); // Backend'deki mevcut modeller
+  const [selectedModel, setSelectedModel] = useState(null); // Seçilen model adı
+  const [currentModel, setCurrentModel] = useState(null); // Şu anda yüklü model
+  const [isLoadingModel, setIsLoadingModel] = useState(false); // Model yükleniyor mu?
+  const [analysisResults, setAnalysisResults] = useState(null); // Analiz sonuçları
 
   // Backend'den dilim görüntüsü yükleme
   const loadSliceFromBackend = useCallback(async (sliceIndex) => {
@@ -84,50 +80,137 @@ function App() {
     }
   }, [apiConnected]);
 
-  const handleImageUpload = useCallback((imageData) => {
-    setImage(null);
-    setDetectedRegions([]);
-    setUserRegions([]);
-    setZoomLevel(1);
-    setUserDrawnArea(null);
+  // Görsel yükleme fonksiyonu
+  const handleFileUpload = useCallback((file) => {
+    if (!file) return;
 
-    const fileName = imageData?.name?.toLowerCase() || imageData?.file?.name?.toLowerCase() || '';
-    const isNiiFile = fileName.endsWith('.nii') || fileName.endsWith('.nii.gz');
+    const fileName = file.name.toLowerCase();
+    const fileType = file.type.toLowerCase();
+    
+    // Standart görsel formatları kontrol et
+    const isStandardImage = fileType.startsWith('image/') && 
+                           !fileName.match(/\.(dcm|dicom|dcom)$/) &&
+                           fileName.match(/\.(jpg|jpeg|png|gif|bmp|tiff|tif)$/);
+    
+    // DICOM kontrolü - .dcm, .dicom, .dcom uzantıları veya belirsiz tip
+    const hasDicomExtension = fileName.match(/\.(dcm|dicom|dcom)$/);
+    const hasDicomMimeType = fileType === 'application/dicom' || 
+                            fileType === 'image/x-dcm';
+    const isUnknownType = !fileType || fileType === '' || fileType === 'application/octet-stream';
+    // Uzantısız ama tip belirsiz olan dosyaları da DICOM olarak kabul et (backend handle edecek)
+    const isDicom = hasDicomExtension || hasDicomMimeType || (isUnknownType && !isStandardImage);
 
-    if (apiConnected && isNiiFile) {
-      // Backend NII dosyası için
-      setVolumeData(null);
-      // İlk dilimi yükle
-      setCurrentSlice(0);
-      loadSliceFromBackend(0);
-      loadVolumeData(1);
-    } else {
-      // Manuel görsel (JPEG/PNG vb.)
-      setVolumeData(null);
-      // Normal görsel yükleme
-      const img = new Image();
-      img.onload = () => {
-        setImage(img);
-        simulateAnalysis();
-      };
-      img.src = imageData.url;
+    if (!isStandardImage && !isDicom) {
+      alert('Lütfen geçerli bir görsel dosyası seçin (JPG, PNG, GIF, BMP, TIFF veya DICOM)');
+      return;
     }
-  }, [apiConnected, loadSliceFromBackend, loadVolumeData]);
 
-  const handleImageClear = useCallback(() => {
-    // Blob URL'yi temizle
+    // Orijinal dosyayı sakla (analiz için)
+    setOriginalImageFile(file);
+
+    // Standart görsel dosyası
+    if (isStandardImage) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          setOriginalImage(img);
+          setImage(img); // Aktif görseli orijinal olarak ayarla
+          setActiveTab('original');
+          setModelImage(null); // Yeni görsel yüklendiğinde model görselini temizle
+          setZoomLevel(1);
+        };
+        img.onerror = () => {
+          alert('Görsel yüklenemedi. Lütfen geçerli bir dosya seçin.');
+        };
+        img.src = e.target.result;
+      };
+      reader.onerror = () => {
+        alert('Dosya okunurken hata oluştu.');
+      };
+      reader.readAsDataURL(file);
+    } else {
+      // DICOM dosyası - önizleme gösterilemez, canvas'ta placeholder gösterilecek
+      // Placeholder görsel oluştur (canvas'ta görünsün)
+      const placeholder = new Image();
+      placeholder.onload = () => {
+        setOriginalImage(placeholder);
+        setImage(placeholder);
+        setModelImage(null);
+        setActiveTab('original');
+        setZoomLevel(1);
+      };
+      // 256x256 gri placeholder görsel oluştur (data URL)
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 256;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#E0E0E0';
+      ctx.fillRect(0, 0, 256, 256);
+      ctx.fillStyle = '#666666';
+      ctx.font = '16px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('DICOM Dosyası', 128, 120);
+      ctx.fillText(file.name, 128, 140);
+      placeholder.src = canvas.toDataURL();
+      console.log(`DICOM dosyası yüklendi: ${file.name}`);
+    }
+  }, []);
+
+  // Drag & Drop handlers
+  const handleDragEnter = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  }, []);
+
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      handleFileUpload(files[0]);
+    }
+  }, [handleFileUpload]);
+
+  // Tab değiştirme
+  useEffect(() => {
+    if (activeTab === 'original' && originalImage) {
+      setImage(originalImage);
+    } else if (activeTab === 'model' && modelImage) {
+      setImage(modelImage);
+    }
+  }, [activeTab, originalImage, modelImage]);
+
+  // Görsel temizleme
+  const handleClearImage = useCallback(() => {
     if (image && image.src && image.src.startsWith('blob:')) {
       URL.revokeObjectURL(image.src);
     }
-    
     setImage(null);
-    setDetectedRegions([]);
-    setUserRegions([]);
+    setOriginalImage(null);
+    setModelImage(null);
+    setOriginalImageFile(null);
+    setActiveTab('original');
     setZoomLevel(1);
     setIsAnalyzing(false);
     setVolumeData(null);
-    setUserDrawnArea(null);
     setCurrentSlice(0);
+    setAnalysisResults(null);
   }, [image]);
   
   // Dilim navigasyonu
@@ -137,74 +220,15 @@ function App() {
     loadSliceFromBackend(newSlice);
   }, [totalSlices, loadSliceFromBackend]);
   
-  // Doktorun çizdiği bölgenin alanını hesapla (pixel cinsinden)
-  const calculateUserDrawnArea = useCallback(() => {
-    if (userRegions.length === 0) {
-      setUserDrawnArea(null);
-      return;
-    }
-    
-    let totalArea = 0;
-    
-    userRegions.forEach(region => {
-      if (region.type === 'rect') {
-        // Dikdörtgen alanı: width * height
-        totalArea += (region.width || 0) * (region.height || 0);
-      } else if (region.type === 'circle') {
-        // Daire alanı: π * r²
-        const radius = (region.width || region.height || 0) / 2;
-        totalArea += Math.PI * radius * radius;
-      } else if (region.type === 'line' && Array.isArray(region.points)) {
-        const points = region.points;
-        const minPointsForPolygon = 6; // En az 3 nokta (x,y çifti)
-        const CLOSE_THRESHOLD = 10; // px
 
-        if (points.length >= minPointsForPolygon) {
-          const firstX = points[0];
-          const firstY = points[1];
-          const lastX = points[points.length - 2];
-          const lastY = points[points.length - 1];
-          const distanceToStart = Math.hypot(lastX - firstX, lastY - firstY);
-
-          if (distanceToStart <= CLOSE_THRESHOLD) {
-            // Şekil kapalı kabul ediliyor - Shoelace formülü ile alan
-            let polygonArea = 0;
-            for (let i = 0; i < points.length; i += 2) {
-              const x1 = points[i];
-              const y1 = points[i + 1];
-              const nextIndex = (i + 2) % points.length;
-              const x2 = points[nextIndex];
-              const y2 = points[nextIndex + 1];
-              polygonArea += (x1 * y2) - (x2 * y1);
-            }
-            totalArea += Math.abs(polygonArea) / 2;
-            return;
-          }
-        }
-
-        // Kapalı değilse, çizgi uzunluğu * kalınlık ile yaklaşık alan
-        if (points.length >= 4) {
-          let lineLength = 0;
-          for (let i = 0; i < points.length - 2; i += 2) {
-            const x1 = points[i];
-            const y1 = points[i + 1];
-            const x2 = points[i + 2];
-            const y2 = points[i + 3];
-            lineLength += Math.hypot(x2 - x1, y2 - y1);
-          }
-          const strokeWidth = region.strokeWidth || 2;
-          totalArea += lineLength * strokeWidth;
-        }
-      }
-    });
-    
-    setUserDrawnArea(Math.round(totalArea));
-  }, [userRegions]);
-  
-  // User regions değiştiğinde alanı hesapla
+  // Tab değiştirme
   useEffect(() => {
-    calculateUserDrawnArea();
-  }, [userRegions, calculateUserDrawnArea]);
+    if (activeTab === 'original' && originalImage) {
+      setImage(originalImage);
+    } else if (activeTab === 'model' && modelImage) {
+      setImage(modelImage);
+    }
+  }, [activeTab, originalImage, modelImage]);
 
   // API bağlantısını kontrol et
   useEffect(() => {
@@ -229,42 +253,6 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const simulateAnalysis = async () => {
-    setIsAnalyzing(true);
-    try {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      const mockDetections = getMockDetections();
-      setDetectedRegions(mockDetections);
-    } catch (error) {
-      console.error('Analiz hatası:', error);
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const handleUserRegionAdd = useCallback((newRegion) => {
-    setUserRegions(prev => [...prev, newRegion]);
-  }, []);
-
-  const handleUserRegionUpdate = useCallback((updatedRegion) => {
-    setUserRegions(prev => 
-      prev.map(region => 
-        region.id === updatedRegion.id ? { ...region, ...updatedRegion } : region
-      )
-    );
-  }, []);
-
-  const handleUserRegionDelete = useCallback((regionId) => {
-    setUserRegions(prev => prev.filter(region => region.id !== regionId));
-  }, []);
-
-  const handleColorChange = useCallback((color) => {
-    setPaintingConfig(prev => ({ ...prev, fillColor: color }));
-  }, []);
-
-  const handleOpacityChange = useCallback((opacity) => {
-    setPaintingConfig(prev => ({ ...prev, opacity }));
-  }, []);
 
   const handleZoomIn = useCallback(() => {
     setZoomLevel(prev => calculateZoomScale(prev, 1.2));
@@ -282,91 +270,251 @@ function App() {
     setZoomLevel(newZoom);
   }, []);
 
-  const handleCursorChange = useCallback((cursorState) => {
-    setCanvasCursor(cursorState);
-  }, []);
+  // X-Ray analiz fonksiyonu
+  const handleAnalyze = useCallback(async () => {
+    if (!originalImageFile) {
+      alert('Lütfen önce bir görsel yükleyin');
+      return;
+    }
 
-  const handleMouseMove = useCallback((e) => {
-    setMousePosition({ x: e.clientX, y: e.clientY });
-    setShowCursorIndicator(true);
-  }, []);
+    setIsAnalyzing(true);
+    
+    try {
+      // Orijinal dosyayı backend'e gönder
+      const result = await analyzeXray(originalImageFile);
+      
+      // Overlay görselini yükle
+      if (result.overlay_image) {
+        const overlayImg = new Image();
+        overlayImg.onload = () => {
+          // Model görselini kaydet
+          setModelImage(overlayImg);
+          setImage(overlayImg); // Aktif görseli model görseli olarak ayarla
+          setActiveTab('model'); // Model sekmesine geç
+          setIsAnalyzing(false);
+          
+          // Analiz sonuçlarını state'e kaydet
+          setAnalysisResults({
+            dice_lung: result.dice_lung,
+            dice_pnx: result.dice_pnx,
+            pnx_ratio_percent: result.pnx_ratio_percent,
+            pnx_ratio_vs_lung_percent: result.pnx_ratio_vs_lung_percent,
+            lung_ratio_percent: result.lung_ratio_percent
+          });
+          
+          // Analiz sonuçlarını konsola yazdır
+          console.log('Analiz Sonuçları:', {
+            dice_lung: result.dice_lung,
+            dice_pnx: result.dice_pnx,
+            pnx_ratio_percent: result.pnx_ratio_percent,
+            pnx_ratio_vs_lung_percent: result.pnx_ratio_vs_lung_percent,
+            lung_ratio_percent: result.lung_ratio_percent
+          });
+        };
+        overlayImg.onerror = () => {
+          setIsAnalyzing(false);
+          setAnalysisResults(null);
+          alert('Overlay görseli yüklenemedi');
+        };
+        overlayImg.src = result.overlay_image;
+      } else {
+        setIsAnalyzing(false);
+        setAnalysisResults(null);
+        alert('Analiz tamamlandı ancak overlay görseli alınamadı');
+      }
+    } catch (error) {
+      console.error('Analiz hatası:', error);
+      setIsAnalyzing(false);
+      setAnalysisResults(null);
+      alert(`Analiz sırasında hata oluştu: ${error.message}`);
+    }
+  }, [originalImageFile]);
 
-  const handleMouseLeave = useCallback(() => {
-    setShowCursorIndicator(false);
-  }, []);
+  // Mevcut modelleri yükle
+  const loadAvailableModels = useCallback(async () => {
+    if (!apiConnected) return;
+    
+    try {
+      const data = await listModels();
+      setAvailableModels(data.models || []);
+      setCurrentModel(data.current_model || null);
+      if (data.current_model) {
+        setSelectedModel(data.current_model);
+      }
+    } catch (error) {
+      console.error('Model listesi alınırken hata:', error);
+    }
+  }, [apiConnected]);
 
-  const handleColorModalOpen = useCallback(() => {
-    setIsColorModalOpen(true);
-  }, []);
+  // API bağlantısı kurulduğunda modelleri yükle
+  useEffect(() => {
+    if (apiConnected) {
+      loadAvailableModels();
+    }
+  }, [apiConnected, loadAvailableModels]);
 
-  const handleColorModalClose = useCallback(() => {
-    setIsColorModalOpen(false);
-  }, []);
+  // Model seçme fonksiyonu
+  const handleModelSelect = useCallback(async (modelName) => {
+    if (!modelName || modelName === selectedModel) return;
 
-  const handleAnalysisComplete = (result) => {
-    console.log('Analiz tamamlandı:', result);
-  }
+    setIsLoadingModel(true);
+    
+    try {
+      const result = await selectModel(modelName);
+      setSelectedModel(modelName);
+      setCurrentModel(modelName);
+      setApiError(null);
+      console.log(`Model başarıyla yüklendi: ${modelName}`);
+    } catch (error) {
+      console.error('Model seçme hatası:', error);
+      alert(`Model yüklenirken hata oluştu: ${error.message}`);
+    } finally {
+      setIsLoadingModel(false);
+    }
+  }, [selectedModel]);
 
   return (
     <div 
-      style={{minHeight: '100vh', backgroundColor: '#0f172a', fontFamily: 'system-ui, sans-serif'}}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
+      style={{
+        minHeight: '100vh', 
+        backgroundColor: '#0F1419', 
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif"
+      }}
     >
-      {/* Modern Header */}
+      {/* Header */}
       <header style={{
-        backgroundColor: '#1e293b',
-        borderBottom: '1px solid #334155',
-        boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+        backgroundColor: '#1A1F2E',
+        borderBottom: '1px solid #2A3441',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+        position: 'relative',
+        zIndex: 100
       }}>
-        <div style={{padding: '0 24px'}}>
-          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', height: '60px'}}>
-            <div style={{display: 'flex', alignItems: 'center', gap: '16px'}}>
+        <div style={{padding: '0 32px'}}>
+          <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', height: '64px'}}>
+            <div></div>
+            {/* Görüntü Sekmeleri */}
+            {originalImage && (
               <div style={{
-                width: '40px',
-                height: '40px',
-                background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
-                borderRadius: '10px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 4px 12px rgba(59,130,246,0.4)'
+                display: 'flex', 
+                gap: '4px', 
+                alignItems: 'center', 
+                backgroundColor: '#252B38', 
+                borderRadius: '8px', 
+                padding: '4px',
+                border: '1px solid #2A3441'
               }}>
-                <span style={{color: 'white', fontWeight: 'bold', fontSize: '18px'}}>X</span>
+                <button
+                  onClick={() => setActiveTab('original')}
+                  style={{
+                    padding: '8px 18px',
+                    backgroundColor: activeTab === 'original' ? '#4A90E2' : 'transparent',
+                    color: activeTab === 'original' ? '#FFFFFF' : '#B8C5D6',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    fontWeight: '500',
+                    letterSpacing: '-0.01em',
+                    whiteSpace: 'nowrap'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (activeTab !== 'original') {
+                      e.target.style.backgroundColor = '#2A3441';
+                      e.target.style.color = '#FFFFFF';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (activeTab !== 'original') {
+                      e.target.style.backgroundColor = 'transparent';
+                      e.target.style.color = '#B8C5D6';
+                    }
+                  }}
+                >
+                  Original
+                </button>
+                <button
+                  onClick={() => modelImage && setActiveTab('model')}
+                  disabled={!modelImage}
+                  style={{
+                    padding: '8px 18px',
+                    backgroundColor: activeTab === 'model' ? '#4A90E2' : 'transparent',
+                    color: activeTab === 'model' ? '#FFFFFF' : (modelImage ? '#B8C5D6' : '#5A6578'),
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    cursor: modelImage ? 'pointer' : 'not-allowed',
+                    transition: 'all 0.2s ease',
+                    fontWeight: '500',
+                    opacity: modelImage ? 1 : 0.5,
+                    letterSpacing: '-0.01em',
+                    whiteSpace: 'nowrap'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (modelImage && activeTab !== 'model') {
+                      e.target.style.backgroundColor = '#2A3441';
+                      e.target.style.color = '#FFFFFF';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (modelImage && activeTab !== 'model') {
+                      e.target.style.backgroundColor = 'transparent';
+                      e.target.style.color = '#B8C5D6';
+                    }
+                  }}
+                >
+                  Analysis
+                </button>
               </div>
-      <div>
-                <h1 style={{fontSize: '20px', fontWeight: '600', color: '#f1f5f9', margin: 0}}>
-                  X-ray Görsel Analiz
-                </h1>
-                <p style={{fontSize: '12px', color: '#94a3b8', margin: 0}}>AI Destekli Medikal Görüntü İşleme</p>
-              </div>
-            </div>
-            <div style={{display: 'flex', gap: '12px'}}>
+            )}
+            
+            <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
               <button style={{
-                padding: '8px 16px',
-                backgroundColor: '#1e293b',
-                color: '#94a3b8',
-                border: '1px solid #334155',
+                padding: '9px 20px',
+                backgroundColor: 'transparent',
+                color: '#B8C5D6',
+                border: '1px solid #3A4454',
                 borderRadius: '6px',
-                fontSize: '14px',
+                fontSize: '13px',
                 cursor: 'pointer',
-                transition: 'all 0.2s'
+                transition: 'all 0.2s ease',
+                fontWeight: '500',
+                letterSpacing: '-0.01em'
+              }}
+              onMouseEnter={(e) => {
+                e.target.style.backgroundColor = '#2A3441';
+                e.target.style.borderColor = '#4A5568';
+                e.target.style.color = '#FFFFFF';
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.backgroundColor = 'transparent';
+                e.target.style.borderColor = '#3A4454';
+                e.target.style.color = '#B8C5D6';
               }}>
-                💾 Kaydet
+                Save
               </button>
               <button style={{
-                padding: '8px 16px',
-                backgroundColor: '#3b82f6',
-                color: 'white',
-                border: 'none',
+                padding: '9px 20px',
+                backgroundColor: '#4A90E2',
+                color: '#FFFFFF',
+                border: '1px solid #4A90E2',
                 borderRadius: '6px',
-                fontSize: '14px',
+                fontSize: '13px',
                 cursor: 'pointer',
                 fontWeight: '500',
-                boxShadow: '0 2px 8px rgba(59,130,246,0.3)',
-                transition: 'all 0.2s'
+                transition: 'all 0.2s ease',
+                letterSpacing: '-0.01em',
+                boxShadow: '0 2px 8px rgba(74, 144, 226, 0.3)'
+              }}
+              onMouseEnter={(e) => {
+                e.target.style.backgroundColor = '#3A7FD2';
+                e.target.style.boxShadow = '0 4px 12px rgba(74, 144, 226, 0.4)';
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.backgroundColor = '#4A90E2';
+                e.target.style.boxShadow = '0 2px 8px rgba(74, 144, 226, 0.3)';
               }}>
-                📤 Export
+                Export
               </button>
             </div>
           </div>
@@ -374,429 +522,366 @@ function App() {
       </header>
 
       {/* Main Layout */}
-      {/* Tab Content */}
-      {activeTab === 'analyzer' ? (
-        <div style={{padding: '24px', backgroundColor: '#0f172a', minHeight: 'calc(100vh - 60px)'}}>
-          <XrayAnalyzer />
-        </div>
-      ) : (
-      <div style={{display: 'flex', height: 'calc(100vh - 60px)', width: '100vw'}}>
-        {/* Sol Sidebar - Kompakt Tasarım */}
+      <div style={{display: 'flex', height: 'calc(100vh - 64px)', width: '100vw'}}>
+        {/* Sidebar */}
         <div style={{
           width: '280px',
           minWidth: '280px',
-          backgroundColor: '#1e293b',
-          borderRight: '1px solid #334155',
+          backgroundColor: '#1A1F2E',
+          borderRight: '1px solid #2A3441',
           display: 'flex',
           flexDirection: 'column',
           height: '100%',
-          overflowY: 'auto'
+          overflowY: 'auto',
+          boxShadow: '2px 0 8px rgba(0,0,0,0.2)'
         }}>
-          {/* Kompakt Görsel Yükleme */}
-          <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
-            <div style={{display: 'flex', gap: '8px', alignItems: 'center'}}>
-              <label htmlFor="file-upload" style={{
-                flex: 1,
-                padding: '8px 12px',
-                backgroundColor: image ? '#10b981' : '#3b82f6',
-                color: 'white',
-                borderRadius: '6px',
-                textAlign: 'center',
-                cursor: image ? 'default' : 'pointer',
-                fontSize: '12px',
-                fontWeight: '500',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '6px'
+
+          {/* Analiz Butonu */}
+          {originalImageFile && (
+            <div style={{padding: '24px', borderBottom: '1px solid #2A3441', backgroundColor: 'transparent'}}>
+              <button
+                onClick={handleAnalyze}
+                disabled={isAnalyzing}
+                style={{
+                  width: '100%',
+                  padding: '14px 20px',
+                  backgroundColor: isAnalyzing ? '#2A3441' : '#4A90E2',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: isAnalyzing ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '10px',
+                  letterSpacing: '-0.01em',
+                  boxShadow: isAnalyzing ? 'none' : '0 4px 12px rgba(74, 144, 226, 0.3)'
+                }}
+                onMouseEnter={(e) => {
+                  if (!isAnalyzing) {
+                    e.target.style.backgroundColor = '#3A7FD2';
+                    e.target.style.boxShadow = '0 6px 16px rgba(74, 144, 226, 0.4)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!isAnalyzing) {
+                    e.target.style.backgroundColor = '#4A90E2';
+                    e.target.style.boxShadow = '0 4px 12px rgba(74, 144, 226, 0.3)';
+                  }
+                }}
+              >
+                {isAnalyzing ? (
+                  <>
+                    <span style={{animation: 'spin 1s linear infinite', display: 'inline-block', width: '14px', height: '14px', border: '2px solid white', borderTop: '2px solid transparent', borderRadius: '50%'}}></span>
+                    Analyzing...
+                  </>
+                ) : (
+                  '🔍 Analyze'
+                )}
+              </button>
+            </div>
+          )}
+
+          {/* Backend API Bölümü */}
+          {/* Model Seçimi */}
+          {apiConnected && availableModels.length > 0 && (
+            <div style={{padding: '24px', borderBottom: '1px solid #2A3441', backgroundColor: 'transparent'}}>
+              <div style={{
+                fontSize: '11px', 
+                fontWeight: '600', 
+                color: '#8B95A7', 
+                marginBottom: '14px', 
+                textTransform: 'uppercase', 
+                letterSpacing: '0.08em'
               }}>
-                {image ? '✓' : '📁'} {image ? 'Yüklendi' : 'Yükle'}
-              </label>
-              {image && (
-                <button
-                  onClick={handleImageClear}
-                  style={{
-                    padding: '8px',
-                    backgroundColor: '#ef4444',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '6px',
-                    fontSize: '12px',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center'
-                  }}
-                  title="Temizle"
-                >
-                  🗑️
-                </button>
-              )}
-            </div>
-            <input
-              id="file-upload"
-              type="file"
-              accept="image/*"
-              style={{display: 'none'}}
-              onChange={(e) => {
-                const file = e.target.files[0];
-                if (file) {
-                  const reader = new FileReader();
-                  reader.onload = (ev) => {
-                    handleImageUpload({ file, url: ev.target.result, name: file.name, size: file.size, type: file.type });
-                  };
-                  reader.readAsDataURL(file);
-                }
-              }}
-            />
-          </div>
-
-          {/* Kompakt Çizim Araçları */}
-          <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
-            <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
-              🎨 Araçlar
-            </div>
-            <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr', gap: '4px'}}>
-              {[
-                { id: 'rect', icon: '▭', label: 'Rect', cursor: 'crosshair', cursorIcon: '┼' },
-                { id: 'circle', icon: '○', label: 'Circle', cursor: 'crosshair', cursorIcon: '⊙' },
-                { id: 'pen', icon: '✏️', label: 'Pen', cursor: 'crosshair', cursorIcon: '✎' },
-                { id: 'eraser', icon: '🧹', label: 'Erase', cursor: 'crosshair', cursorIcon: '✕' },
-                { id: 'pan', icon: '✋', label: 'Pan', cursor: 'grab', cursorIcon: '✋' }
-              ].map(tool => (
-                <button
-                  key={tool.id}
-                  onClick={() => setSelectedTool(tool.id)}
-                  style={{
-                    padding: '6px',
-                    backgroundColor: selectedTool === tool.id ? '#3b82f6' : '#374151',
-                    color: selectedTool === tool.id ? 'white' : '#94a3b8',
-                    border: selectedTool === tool.id ? '2px solid #60a5fa' : '1px solid #4b5563',
-                    borderRadius: '4px',
-                    fontSize: '10px',
-                    fontWeight: selectedTool === tool.id ? '600' : '400',
-                    transition: 'all 0.2s',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    gap: '2px',
-                    position: 'relative',
-                    minHeight: '40px',
-                    cursor: tool.cursor
-                  }}
-                  title={`${tool.label} - ${tool.cursor === 'crosshair' ? 'Çizim aracı' : tool.cursor === 'grab' ? 'Kaydırma aracı' : 'Silgi aracı'} (${tool.cursor})`}
-                >
-                  <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px'}}>
-                    <span style={{fontSize: '14px'}}>{tool.icon}</span>
-                    <div style={{display: 'flex', alignItems: 'center', gap: '3px'}}>
-                      <span style={{fontSize: '8px'}}>{tool.label}</span>
-                      <span style={{
-                        fontSize: '7px', 
-                        color: selectedTool === tool.id ? '#60a5fa' : '#64748b',
-                        fontWeight: 'bold',
-                        opacity: 0.8
-                      }}>{tool.cursorIcon}</span>
-                    </div>
-                  </div>
-                  {selectedTool === tool.id && (
-                    <div style={{
-                      position: 'absolute',
-                      top: '1px',
-                      right: '1px',
-                      width: '4px',
-                      height: '4px',
-                      backgroundColor: '#10b981',
-                      borderRadius: '50%',
-                      border: '1px solid white'
-                    }}></div>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Kompakt Renk Seçimi */}
-          <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
-            <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
-              🎨 Renk
-            </div>
-            <button
-              onClick={handleColorModalOpen}
-              disabled={!image}
-              style={{
-                width: '100%',
-                padding: '8px 12px',
-                backgroundColor: '#374151',
-                color: '#cbd5e1',
-                border: '1px solid #4b5563',
-                borderRadius: '6px',
-                fontSize: '12px',
-                cursor: image ? 'pointer' : 'not-allowed',
-                opacity: image ? 1 : 0.5,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                transition: 'all 0.2s'
-              }}
-              onMouseEnter={(e) => {
-                if (image) {
-                  e.target.style.backgroundColor = '#4b5563';
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (image) {
-                  e.target.style.backgroundColor = '#374151';
-                }
-              }}
-            >
-              <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
-                <div
-                  style={{
-                    width: '16px',
-                    height: '16px',
-                    borderRadius: '3px',
-                    backgroundColor: paintingConfig.fillColor,
-                    opacity: paintingConfig.opacity,
-                    border: '1px solid #64748b'
-                  }}
-                ></div>
-                <span>{paintingConfig.fillColor.toUpperCase()}</span>
+                Model Selection
               </div>
-              <span style={{fontSize: '10px', color: '#94a3b8'}}>
-                {Math.round(paintingConfig.opacity * 100)}%
-              </span>
-            </button>
-          </div>
+              
+              <select
+                value={selectedModel || ''}
+                onChange={(e) => handleModelSelect(e.target.value)}
+                disabled={isLoadingModel}
+                style={{
+                  width: '100%',
+                  padding: '11px 14px',
+                  backgroundColor: isLoadingModel ? '#252B38' : '#252B38',
+                  color: '#FFFFFF',
+                  border: '1px solid #3A4454',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  fontWeight: '500',
+                  cursor: isLoadingModel ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.2s ease',
+                  letterSpacing: '-0.01em',
+                  appearance: 'none',
+                  backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23B8C5D6\' d=\'M6 9L1 4h10z\'/%3E%3C/svg%3E")',
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 14px center',
+                  paddingRight: '38px'
+                }}
+                onMouseEnter={(e) => {
+                  if (!isLoadingModel) {
+                    e.target.style.borderColor = '#4A90E2';
+                    e.target.style.backgroundColor = '#2A3441';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!isLoadingModel) {
+                    e.target.style.borderColor = '#3A4454';
+                    e.target.style.backgroundColor = '#252B38';
+                  }
+                }}
+              >
+                <option value="" style={{backgroundColor: '#252B38', color: '#FFFFFF'}}>Select model...</option>
+                {availableModels.map((model) => (
+                  <option key={model.name} value={model.name} style={{backgroundColor: '#252B38', color: '#FFFFFF'}}>
+                    {model.name} {currentModel === model.name ? '(Active)' : ''}
+                  </option>
+                ))}
+              </select>
 
-          {/* API Bağlantı Durumu */}
-          <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
-            <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
-              🔌 Backend API
-            </div>
-            <div style={{
-              backgroundColor: apiConnected ? '#166534' : '#7f1d1d',
-              borderRadius: '4px',
-              padding: '8px',
-              border: `1px solid ${apiConnected ? '#22c55e' : '#ef4444'}`
-            }}>
-              <div style={{display: 'flex', alignItems: 'center', gap: '6px', marginBottom: apiError ? '4px' : '0'}}>
+              {isLoadingModel && (
                 <div style={{
-                  width: '8px',
-                  height: '8px',
-                  borderRadius: '50%',
-                  backgroundColor: apiConnected ? '#22c55e' : '#ef4444',
-                  boxShadow: apiConnected ? '0 0 8px #22c55e' : 'none'
-                }}></div>
-                <span style={{fontSize: '10px', color: apiConnected ? '#bbf7d0' : '#fca5a5', fontWeight: '500'}}>
-                  {apiConnected ? 'Bağlı' : 'Bağlantı Yok'}
-                </span>
-              </div>
-              {apiError && (
-                <div style={{fontSize: '9px', color: '#fca5a5', marginTop: '4px'}}>
-                  {apiError}
+                  marginTop: '14px',
+                  padding: '12px',
+                  backgroundColor: '#1E2532',
+                  borderRadius: '8px',
+                  border: '1px solid #3A4454',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px'
+                }}>
+                  <div style={{
+                    width: '14px',
+                    height: '14px',
+                    border: '2px solid #4A90E2',
+                    borderTop: '2px solid transparent',
+                    borderRadius: '50%',
+                    animation: 'spin 1s linear infinite'
+                  }}></div>
+                  <span style={{fontSize: '12px', color: '#B8C5D6', fontWeight: '500', letterSpacing: '-0.01em'}}>
+                    Loading model...
+                  </span>
+                </div>
+              )}
+
+              {currentModel && !isLoadingModel && (
+                <div style={{
+                  marginTop: '14px',
+                  padding: '12px',
+                  backgroundColor: '#1E2A1E',
+                  borderRadius: '8px',
+                  border: '1px solid #2A4A2A',
+                  fontSize: '12px',
+                  color: '#6BCF7F',
+                  fontWeight: '500',
+                  letterSpacing: '-0.01em'
+                }}>
+                  ✓ Active: {currentModel}
                 </div>
               )}
             </div>
-            {apiConnected && (
-              <>
-                <button
-                  onClick={() => {
-                    setCurrentSlice(0);
-                    loadSliceFromBackend(0);
-                    loadVolumeData(1);
-                  }}
-                  disabled={isLoadingSlice}
-                  style={{
-                    width: '100%',
-                    marginTop: '8px',
-                    padding: '6px 12px',
-                    backgroundColor: isLoadingSlice ? '#475569' : '#3b82f6',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    fontSize: '10px',
-                    cursor: isLoadingSlice ? 'not-allowed' : 'pointer',
-                    opacity: isLoadingSlice ? 0.6 : 1
-                  }}
-                >
-                  📥 Backend'den Yükle
-                </button>
-                {isLoadingSlice && (
+          )}
+
+          {/* Analiz Sonuçları */}
+          {analysisResults && (
+            <div style={{padding: '24px', borderBottom: '1px solid #2A3441', backgroundColor: 'transparent'}}>
+              <div style={{
+                fontSize: '11px', 
+                fontWeight: '600', 
+                color: '#8B95A7', 
+                marginBottom: '16px', 
+                textTransform: 'uppercase', 
+                letterSpacing: '0.08em'
+              }}>
+                Analysis Results
+              </div>
+              
+              <div style={{
+                backgroundColor: '#1E2532',
+                borderRadius: '10px',
+                border: '1px solid #2A3441',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '14px'
+              }}>
+                {/* Pneumothorax Ratio */}
+                <div>
                   <div style={{
-                    marginTop: '8px',
-                    padding: '8px',
-                    backgroundColor: '#1e40af',
-                    borderRadius: '4px',
-                    border: '1px solid #3b82f6',
                     display: 'flex',
+                    justifyContent: 'space-between',
                     alignItems: 'center',
-                    gap: '8px'
+                    marginBottom: '6px'
                   }}>
-                    <div style={{
-                      width: '12px',
-                      height: '12px',
-                      border: '2px solid #60a5fa',
-                      borderTop: '2px solid transparent',
-                      borderRadius: '50%',
-                      animation: 'spin 1s linear infinite'
-                    }}></div>
-                    <span style={{fontSize: '10px', color: '#bfdbfe'}}>
-                      Dilim görüntüsü yükleniyor...
+                    <span style={{
+                      fontSize: '12px',
+                      color: '#8B95A7',
+                      fontWeight: '500'
+                    }}>
+                      Pneumothorax
+                    </span>
+                    <span style={{
+                      fontSize: '16px',
+                      color: '#FF6B6B',
+                      fontWeight: '700',
+                      letterSpacing: '-0.02em'
+                    }}>
+                      {analysisResults.pnx_ratio_percent?.toFixed(2) || '0.00'}%
                     </span>
                   </div>
+                  <div style={{
+                    width: '100%',
+                    height: '6px',
+                    backgroundColor: '#2A3441',
+                    borderRadius: '3px',
+                    overflow: 'hidden'
+                  }}>
+                    <div style={{
+                      width: `${Math.min(analysisResults.pnx_ratio_percent || 0, 100)}%`,
+                      height: '100%',
+                      backgroundColor: '#FF6B6B',
+                      borderRadius: '3px',
+                      transition: 'width 0.3s ease'
+                    }}></div>
+                  </div>
+                </div>
+
+                {/* Lung Ratio */}
+                <div>
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: '6px'
+                  }}>
+                    <span style={{
+                      fontSize: '12px',
+                      color: '#8B95A7',
+                      fontWeight: '500'
+                    }}>
+                      Lung
+                    </span>
+                    <span style={{
+                      fontSize: '16px',
+                      color: '#51CF66',
+                      fontWeight: '700',
+                      letterSpacing: '-0.02em'
+                    }}>
+                      {analysisResults.lung_ratio_percent?.toFixed(2) || '0.00'}%
+                    </span>
+                  </div>
+                  <div style={{
+                    width: '100%',
+                    height: '6px',
+                    backgroundColor: '#2A3441',
+                    borderRadius: '3px',
+                    overflow: 'hidden'
+                  }}>
+                    <div style={{
+                      width: `${Math.min(analysisResults.lung_ratio_percent || 0, 100)}%`,
+                      height: '100%',
+                      backgroundColor: '#51CF66',
+                      borderRadius: '3px',
+                      transition: 'width 0.3s ease'
+                    }}></div>
+                  </div>
+                </div>
+
+                {/* Pneumothorax vs Lung Ratio */}
+                {analysisResults.pnx_ratio_vs_lung_percent !== undefined && (
+                  <div style={{
+                    paddingTop: '14px',
+                    borderTop: '1px solid #2A3441'
+                  }}>
+                    <div style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: '6px'
+                    }}>
+                      <span style={{
+                        fontSize: '12px',
+                        color: '#8B95A7',
+                        fontWeight: '500'
+                      }}>
+                        PnX / Lung Ratio
+                      </span>
+                      <span style={{
+                        fontSize: '14px',
+                        color: '#FFD93D',
+                        fontWeight: '600',
+                        letterSpacing: '-0.01em'
+                      }}>
+                        {analysisResults.pnx_ratio_vs_lung_percent?.toFixed(2) || '0.00'}%
+                      </span>
+                    </div>
+                  </div>
                 )}
-              </>
-            )}
-          </div>
 
-          {/* Backend Alan/Hacim Bilgisi */}
-          {apiConnected && volumeData && (
-            <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
-              <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
-                📊 Segmentasyon Alanı
-              </div>
-              <div style={{
-                backgroundColor: '#1e40af',
-                borderRadius: '4px',
-                padding: '8px',
-                border: '1px solid #3b82f6'
-              }}>
-                <div style={{fontSize: '10px', color: '#bfdbfe', marginBottom: '4px'}}>
-                  Etiket ID: {volumeData.label_id}
-                </div>
-                <div style={{fontSize: '10px', color: '#bfdbfe', marginBottom: '4px'}}>
-                  Voksel Sayısı: {volumeData.voxel_count.toLocaleString()}
-                </div>
-                <div style={{fontSize: '10px', color: '#bfdbfe', marginBottom: '4px'}}>
-                  <strong>Alan (px²): {volumeData.voxel_count.toLocaleString()}</strong>
-                </div>
-                <div style={{fontSize: '9px', color: '#93c5fd', marginTop: '4px'}}>
-                  Hacim: {volumeData.total_volume_mm3.toFixed(2)} mm³
+                {/* Dice Scores */}
+                <div style={{
+                  paddingTop: '14px',
+                  borderTop: '1px solid #2A3441',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: '12px'
+                }}>
+                  <div style={{flex: 1}}>
+                    <div style={{
+                      fontSize: '10px',
+                      color: '#5A6578',
+                      marginBottom: '4px',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em'
+                    }}>
+                      Dice Lung
+                    </div>
+                    <div style={{
+                      fontSize: '14px',
+                      color: '#B8C5D6',
+                      fontWeight: '600'
+                    }}>
+                      {analysisResults.dice_lung?.toFixed(3) || 'N/A'}
+                    </div>
+                  </div>
+                  <div style={{flex: 1}}>
+                    <div style={{
+                      fontSize: '10px',
+                      color: '#5A6578',
+                      marginBottom: '4px',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em'
+                    }}>
+                      Dice PnX
+                    </div>
+                    <div style={{
+                      fontSize: '14px',
+                      color: '#B8C5D6',
+                      fontWeight: '600'
+                    }}>
+                      {analysisResults.dice_pnx?.toFixed(3) || 'N/A'}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Doktorun Çizdiği Alan */}
-          {userDrawnArea !== null && userDrawnArea > 0 && (
-            <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
-              <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
-                ✏️ Çizilen Alan
-              </div>
-              <div style={{
-                backgroundColor: '#7c2d12',
-                borderRadius: '4px',
-                padding: '8px',
-                border: '1px solid #f97316'
-              }}>
-                <div style={{fontSize: '12px', color: '#fed7aa', fontWeight: '600'}}>
-                  {userDrawnArea.toLocaleString()} px²
-                </div>
-                <div style={{fontSize: '9px', color: '#fdba74', marginTop: '4px'}}>
-                  {userRegions.length} bölge
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Karşılaştırma: Doktor Çizimi vs Segmentasyon */}
-          {apiConnected && volumeData && userDrawnArea !== null && userDrawnArea > 0 && (
-            <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
-              <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
-                ⚖️ Karşılaştırma
-              </div>
-              <div style={{
-                backgroundColor: '#581c87',
-                borderRadius: '4px',
-                padding: '8px',
-                border: '1px solid #a855f7'
-              }}>
-                {/* Segmentasyon Alanı */}
-                <div style={{marginBottom: '8px', paddingBottom: '8px', borderBottom: '1px solid #7c3aed'}}>
-                  <div style={{fontSize: '9px', color: '#c4b5fd', marginBottom: '4px'}}>
-                    🤖 Segmentasyon (AI)
-                  </div>
-                  <div style={{fontSize: '11px', color: '#e9d5ff', fontWeight: '600'}}>
-                    {volumeData.voxel_count.toLocaleString()} px²
-                  </div>
-                </div>
-
-                {/* Doktor Çizimi */}
-                <div style={{marginBottom: '8px', paddingBottom: '8px', borderBottom: '1px solid #7c3aed'}}>
-                  <div style={{fontSize: '9px', color: '#c4b5fd', marginBottom: '4px'}}>
-                    👨‍⚕️ Doktor Çizimi
-                  </div>
-                  <div style={{fontSize: '11px', color: '#e9d5ff', fontWeight: '600'}}>
-                    {userDrawnArea.toLocaleString()} px²
-                  </div>
-                </div>
-
-                {/* Fark ve Yüzde */}
-                {(() => {
-                  const segmentArea = volumeData.voxel_count;
-                  const doctorArea = userDrawnArea;
-                  const difference = Math.abs(segmentArea - doctorArea);
-                  const percentageDiff = segmentArea > 0 
-                    ? ((difference / segmentArea) * 100).toFixed(2)
-                    : 0;
-                  const isDoctorLarger = doctorArea > segmentArea;
-                  const matchPercentage = segmentArea > 0 && doctorArea > 0
-                    ? (Math.min(segmentArea, doctorArea) / Math.max(segmentArea, doctorArea) * 100).toFixed(2)
-                    : 0;
-
-                  return (
-                    <>
-                      <div style={{marginBottom: '6px'}}>
-                        <div style={{fontSize: '9px', color: '#c4b5fd', marginBottom: '4px'}}>
-                          📊 Fark
-                        </div>
-                        <div style={{fontSize: '11px', color: '#e9d5ff', fontWeight: '600'}}>
-                          {difference.toLocaleString()} px²
-                          <span style={{fontSize: '9px', marginLeft: '6px', color: isDoctorLarger ? '#fbbf24' : '#60a5fa'}}>
-                            ({isDoctorLarger ? 'Doktor daha büyük' : 'Segmentasyon daha büyük'})
-                          </span>
-                        </div>
-                      </div>
-
-                      <div style={{marginBottom: '6px'}}>
-                        <div style={{fontSize: '9px', color: '#c4b5fd', marginBottom: '4px'}}>
-                          📈 Yüzde Farkı
-                        </div>
-                        <div style={{fontSize: '11px', color: '#e9d5ff', fontWeight: '600'}}>
-                          %{percentageDiff}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{fontSize: '9px', color: '#c4b5fd', marginBottom: '4px'}}>
-                          ✅ Uyum Oranı
-                        </div>
-                        <div style={{
-                          fontSize: '12px',
-                          color: matchPercentage >= 80 ? '#10b981' : matchPercentage >= 60 ? '#f59e0b' : '#ef4444',
-                          fontWeight: '700'
-                        }}>
-                          %{matchPercentage}
-                        </div>
-                        <div style={{
-                          fontSize: '8px',
-                          color: matchPercentage >= 80 ? '#86efac' : matchPercentage >= 60 ? '#fcd34d' : '#fca5a5',
-                          marginTop: '2px'
-                        }}>
-                          {matchPercentage >= 80 ? 'Mükemmel uyum' : matchPercentage >= 60 ? 'İyi uyum' : 'Düşük uyum'}
-                        </div>
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-          )}
-
-          {/* Kompakt Zoom Kontrolleri */}
-          <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
-            <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
-              🔍 Zoom
+          {/* Zoom Kontrolleri */}
+          <div style={{padding: '24px', borderBottom: '1px solid #2A3441', backgroundColor: 'transparent'}}>
+            <div style={{
+              fontSize: '11px', 
+              fontWeight: '600', 
+              color: '#8B95A7', 
+              marginBottom: '14px', 
+              textTransform: 'uppercase', 
+              letterSpacing: '0.08em'
+            }}>
+              Zoom Controls
             </div>
             <ZoomControls
               zoomLevel={zoomLevel}
@@ -807,206 +892,280 @@ function App() {
             />
           </div>
 
-          {/* Kompakt Analiz Durumu */}
+          {/* Analiz Durumu */}
           {isAnalyzing && (
-            <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
+            <div style={{padding: '24px', borderBottom: '1px solid #2A3441', backgroundColor: 'transparent'}}>
               <div style={{
-                backgroundColor: '#1e40af',
-                borderRadius: '4px',
-                padding: '8px',
-                border: '1px solid #3b82f6',
+                backgroundColor: '#1E2532',
+                borderRadius: '8px',
+                padding: '14px',
+                border: '1px solid #3A4454',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '8px'
+                gap: '12px'
               }}>
                 <div style={{
-                  width: '12px',
-                  height: '12px',
-                  border: '2px solid #60a5fa',
+                  width: '14px',
+                  height: '14px',
+                  border: '2px solid #4A90E2',
                   borderTop: '2px solid transparent',
                   borderRadius: '50%',
                   animation: 'spin 1s linear infinite'
                 }}></div>
-                <span style={{fontSize: '10px', color: '#bfdbfe', fontWeight: '500'}}>
-                  AI Analiz ediyor...
+                <span style={{fontSize: '13px', color: '#B8C5D6', fontWeight: '500', letterSpacing: '-0.01em'}}>
+                  Analyzing image...
                 </span>
               </div>
             </div>
           )}
 
-          {/* Kompakt Tespit Sonuçları */}
-          {detectedRegions.length > 0 && (
-            <div style={{padding: '12px', borderBottom: '1px solid #334155'}}>
-              <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
-                📊 Tespitler
-              </div>
-              <div style={{
-                backgroundColor: '#166534',
-                borderRadius: '4px',
-                padding: '8px',
-                border: '1px solid #22c55e'
-              }}>
-                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px'}}>
-                  <span style={{fontSize: '10px', color: '#bbf7d0', fontWeight: '500'}}>
-                    {detectedRegions.length} bölge
-                  </span>
-                  <span style={{fontSize: '9px', color: '#86efac'}}>
-                    %{Math.round(detectedRegions.reduce((acc, r) => acc + r.confidence, 0) / detectedRegions.length * 100)}
-                  </span>
-                </div>
-                <div style={{display: 'flex', gap: '4px', flexWrap: 'wrap'}}>
-                  {detectedRegions.slice(0, 4).map((region, index) => (
-                    <div key={region.id} style={{
-                      backgroundColor: '#14532d',
-                      padding: '2px 6px',
-                      borderRadius: '3px',
-                      fontSize: '8px',
-                      color: '#86efac'
-                    }}>
-                      #{index + 1}
-                    </div>
-                  ))}
-                  {detectedRegions.length > 4 && (
-                    <div style={{
-                      backgroundColor: '#14532d',
-                      padding: '2px 6px',
-                      borderRadius: '3px',
-                      fontSize: '8px',
-                      color: '#86efac'
-                    }}>
-                      +{detectedRegions.length - 4}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Kompakt Manuel Bölgeler */}
-          {userRegions.length > 0 && (
-            <div style={{padding: '12px'}}>
-              <div style={{fontSize: '11px', fontWeight: '600', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px'}}>
-                ✏️ Manuel
-              </div>
-              <div style={{
-                backgroundColor: '#374151',
-                borderRadius: '4px',
-                padding: '8px',
-                border: '1px solid #4b5563'
-              }}>
-                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px'}}>
-                  <span style={{fontSize: '10px', color: '#cbd5e1'}}>
-                    {userRegions.length} bölge
-                  </span>
-                  <button
-                    onClick={() => setUserRegions([])}
-                    style={{
-                      padding: '4px 8px',
-                      backgroundColor: '#ef4444',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '3px',
-                      fontSize: '9px',
-                      cursor: 'pointer'
-                    }}
-                    title="Tümünü Temizle"
-                  >
-                    🗑️
-                  </button>
-                </div>
-                <div style={{display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '120px', overflowY: 'auto'}}>
-                  {userRegions.map((region, index) => (
-                    <div key={region.id} style={{
-                      backgroundColor: '#1e293b',
-                      borderRadius: '3px',
-                      padding: '4px 6px',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      fontSize: '9px'
-                    }}>
-                      <div style={{display: 'flex', alignItems: 'center', gap: '4px'}}>
-                        <div
-                          style={{
-                            width: '8px',
-                            height: '8px',
-                            borderRadius: '1px',
-                            backgroundColor: region.fill || region.stroke || '#3b82f6'
-                          }}
-                        ></div>
-                        <span style={{color: '#cbd5e1'}}>
-                          {region.type === 'line' ? 'Line' : region.type === 'circle' ? 'Circle' : 'Rect'} #{index + 1}
-                        </span>
-                      </div>
-                      <button
-                        onClick={() => handleUserRegionDelete(region.id)}
-                        style={{
-                          padding: '2px 4px',
-                          backgroundColor: '#ef4444',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '2px',
-                          fontSize: '8px',
-                          cursor: 'pointer'
-                        }}
-                        title="Sil"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* Sağ Alan - Canvas */}
-        <div style={{flex: 1, backgroundColor: '#0f172a', position: 'relative', overflow: 'auto', width: 'calc(100vw - 280px)', minWidth: '400px'}}>
+        {/* Canvas Area */}
+        <div style={{flex: 1, backgroundColor: '#000000', position: 'relative', overflow: 'hidden', width: 'calc(100vw - 280px)', minWidth: '400px'}}>
           {/* Canvas Info Bar */}
           {image && (
             <div style={{
               position: 'absolute',
               top: '20px',
               right: '20px',
-              backgroundColor: '#1e293b',
-              padding: '12px 16px',
-              borderRadius: '8px',
-              border: '1px solid #334155',
+              backgroundColor: '#1A1F2E',
+              padding: '14px 18px',
+              borderRadius: '10px',
+              border: '1px solid #2A3441',
               zIndex: 10,
-              boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+              boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '14px',
+              minWidth: '180px'
             }}>
-              <div style={{fontSize: '12px', color: '#94a3b8'}}>
-                📐 {image.naturalWidth} × {image.naturalHeight} px
+              <div>
+                <div style={{fontSize: '12px', color: '#B8C5D6', fontWeight: '500', letterSpacing: '-0.01em', marginBottom: '6px'}}>
+                  Dimensions
+                </div>
+                <div style={{fontSize: '13px', color: '#FFFFFF', fontWeight: '600', letterSpacing: '-0.01em'}}>
+                  {image.naturalWidth} × {image.naturalHeight} px
+                </div>
+                <div style={{fontSize: '12px', color: '#8B95A7', marginTop: '8px', fontWeight: '400', letterSpacing: '-0.01em'}}>
+                  Zoom: {Math.round(zoomLevel * 100)}%
+                </div>
               </div>
-              <div style={{fontSize: '12px', color: '#94a3b8', marginTop: '4px'}}>
-                🔍 Zoom: {Math.round(zoomLevel * 100)}%
-              </div>
+              <button
+                onClick={handleClearImage}
+                style={{
+                  padding: '10px 14px',
+                  backgroundColor: '#DC3545',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  width: '100%',
+                  letterSpacing: '-0.01em',
+                  boxShadow: '0 2px 8px rgba(220, 53, 69, 0.3)'
+                }}
+                onMouseEnter={(e) => {
+                  e.target.style.backgroundColor = '#C82333';
+                  e.target.style.boxShadow = '0 4px 12px rgba(220, 53, 69, 0.4)';
+                }}
+                onMouseLeave={(e) => {
+                  e.target.style.backgroundColor = '#DC3545';
+                  e.target.style.boxShadow = '0 2px 8px rgba(220, 53, 69, 0.3)';
+                }}
+              >
+                Clear Image
+              </button>
             </div>
           )}
 
           {/* Canvas */}
           <div 
-            className={`canvas-container cursor-${canvasCursor}`}
-            style={{width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px'}}
+            className="canvas-container"
+            style={{width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0', backgroundColor: '#000000', overflow: 'hidden'}}
           >
-            <XrayCanvas
-              image={image}
-              detectedRegions={detectedRegions}
-              userRegions={userRegions}
-              onUserRegionAdd={handleUserRegionAdd}
-              onUserRegionUpdate={handleUserRegionUpdate}
-              onUserRegionDelete={handleUserRegionDelete}
-              paintingConfig={paintingConfig}
-              zoomLevel={zoomLevel}
-              onZoomChange={handleZoomChange}
-              selectedTool={selectedTool}
-              onCursorChange={handleCursorChange}
-            />
+            {image ? (
+              <XrayCanvas
+                image={image}
+                zoomLevel={zoomLevel}
+                selectedTool="pan"
+              />
+            ) : originalImageFile ? (
+              /* DICOM dosyası yüklendi - Analiz bekleniyor */
+              <div
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: 'transparent',
+                  padding: '60px'
+                }}
+              >
+                <div style={{
+                  width: '80px',
+                  height: '80px',
+                  backgroundColor: '#1A1F2E',
+                  borderRadius: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '40px',
+                  marginBottom: '32px',
+                  border: '1px solid #2A3441'
+                }}>📄</div>
+                <h3 style={{
+                  fontSize: '20px',
+                  fontWeight: '600',
+                  color: '#FFFFFF',
+                  margin: '0 0 12px 0',
+                  letterSpacing: '-0.02em'
+                }}>
+                  DICOM File Loaded
+                </h3>
+                <p style={{
+                  fontSize: '14px',
+                  color: '#8B95A7',
+                  margin: '0 0 32px 0',
+                  textAlign: 'center',
+                  maxWidth: '400px',
+                  fontFamily: "'SF Mono', 'Monaco', monospace"
+                }}>
+                  {originalImageFile.name}
+                </p>
+                <p style={{
+                  fontSize: '13px',
+                  color: '#5A6578',
+                  textAlign: 'center',
+                  maxWidth: '400px'
+                }}>
+                  Click "Analyze" in the sidebar to process
+                </p>
+              </div>
+            ) : (
+              /* Görsel Yükleme Alanı */
+              <div
+                onDragEnter={handleDragEnter}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: 'transparent',
+                  border: `2px dashed ${isDragging ? '#4A90E2' : '#2A3441'}`,
+                  borderRadius: '12px',
+                  margin: '40px',
+                  transition: 'all 0.3s ease',
+                  cursor: 'pointer',
+                  position: 'relative'
+                }}
+                onClick={() => document.getElementById('image-upload-input')?.click()}
+              >
+                <input
+                  id="image-upload-input"
+                  type="file"
+                  accept="image/*,.dcm,.dicom,.dcom,application/dicom,image/x-dcm,*/*"
+                  style={{display: 'none'}}
+                  onChange={(e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                      handleFileUpload(file);
+                    }
+                    e.target.value = '';
+                  }}
+                />
+                
+                <div style={{
+                  width: '72px',
+                  height: '72px',
+                  backgroundColor: isDragging ? '#1E2A3E' : '#1A1F2E',
+                  borderRadius: '14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '36px',
+                  marginBottom: '28px',
+                  border: `1px solid ${isDragging ? '#4A90E2' : '#2A3441'}`,
+                  transition: 'all 0.3s ease'
+                }}>
+                  📤
+                </div>
+                
+                <h3 style={{
+                  fontSize: '20px',
+                  fontWeight: '600',
+                  color: '#FFFFFF',
+                  margin: '0 0 10px 0',
+                  letterSpacing: '-0.02em'
+                }}>
+                  {isDragging ? 'Drop file here' : 'Upload Image'}
+                </h3>
+                
+                <p style={{
+                  fontSize: '14px',
+                  color: '#8B95A7',
+                  margin: '0 0 28px 0',
+                  textAlign: 'center',
+                  maxWidth: '400px'
+                }}>
+                  {isDragging 
+                    ? 'Release to upload' 
+                    : 'Drag and drop or click to select'}
+                </p>
+                
+                <button
+                  style={{
+                    padding: '12px 28px',
+                    backgroundColor: '#4A90E2',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    letterSpacing: '-0.01em',
+                    boxShadow: '0 4px 12px rgba(74, 144, 226, 0.3)'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.target.style.backgroundColor = '#3A7FD2';
+                    e.target.style.boxShadow = '0 6px 16px rgba(74, 144, 226, 0.4)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.target.style.backgroundColor = '#4A90E2';
+                    e.target.style.boxShadow = '0 4px 12px rgba(74, 144, 226, 0.3)';
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    document.getElementById('image-upload-input')?.click();
+                  }}
+                >
+                  Select File
+                </button>
+                
+                <p style={{
+                  fontSize: '11px',
+                  color: '#5A6578',
+                  marginTop: '24px',
+                  textAlign: 'center',
+                  fontFamily: "'SF Mono', 'Monaco', monospace"
+                }}>
+                  JPG, PNG, GIF, BMP, TIFF, DICOM (.dcm, .dicom, .dcom)
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>
-      )}
 
       <style>{`
         @keyframes spin {
@@ -1024,70 +1183,28 @@ function App() {
           width: 8px;
         }
         ::-webkit-scrollbar-track {
-          background: #1e293b;
+          background: #1A1F2E;
+          border-left: 1px solid #2A3441;
         }
         ::-webkit-scrollbar-thumb {
-          background: #475569;
+          background: #3A4454;
+          border: 1px solid #2A3441;
           border-radius: 4px;
         }
         ::-webkit-scrollbar-thumb:hover {
-          background: #64748b;
+          background: #4A5568;
         }
-        
-        /* Çizim araçları butonları için özel cursor'lar */
-        .drawing-tool-button {
-          cursor: pointer !important;
-        }
-        .drawing-tool-button:hover {
-          cursor: pointer !important;
+        ::-webkit-scrollbar-thumb:hover {
+          background: #a8a8a8;
         }
         
         /* Canvas cursor stilleri */
         .canvas-container {
           cursor: default;
         }
-        .canvas-container.cursor-crosshair {
-          cursor: crosshair !important;
-        }
-        .canvas-container.cursor-grab {
-          cursor: grab !important;
-        }
-        .canvas-container.cursor-grabbing {
-          cursor: grabbing !important;
-        }
-        .canvas-container.cursor-move {
-          cursor: move !important;
-        }
       `}</style>
       
-      {/* Cursor Indicator */}
-      <CursorIndicator
-        cursorState={canvasCursor}
-        selectedTool={selectedTool}
-        position={mousePosition}
-        visible={showCursorIndicator && image}
-      />
-      
-      {/* Color Modal */}
-      <ColorModal
-        isOpen={isColorModalOpen}
-        onClose={handleColorModalClose}
-        selectedColor={paintingConfig.fillColor}
-        opacity={paintingConfig.opacity}
-        onColorChange={handleColorChange}
-        onOpacityChange={handleOpacityChange}
-      />
 
-      {/* Image Uploader (Yeni) */}
-      <div className="min-h-screen bg-gray-100 p-8">
-        <div className="max-w-4xl mx-auto">
-          <h1 className="text-4xl font-bold text-center mb-8">
-            🫁 Pnömotoraks Segmentasyon Sistemi
-          </h1>
-          
-          <ImageUploader onAnalysisComplete={handleAnalysisComplete} />
-        </div>
-      </div>
     </div>
   );
 }

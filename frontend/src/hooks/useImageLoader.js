@@ -1,5 +1,4 @@
 import { useState, useCallback } from 'react';
-import useImage from 'use-image';
 
 /**
  * Görsel yükleme ve işleme için custom hook
@@ -9,10 +8,6 @@ export const useImageLoader = () => {
   const [uploadedImage, setUploadedImage] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [imageUrl, setImageUrl] = useState(null);
-  
-  // use-image hook'unu kullanarak görsel yükle
-  const [image, imageStatus] = useImage(imageUrl);
 
   /**
    * Dosya yükleme işlemi
@@ -22,13 +17,35 @@ export const useImageLoader = () => {
     if (!file) return;
     
     // Dosya tipini kontrol et (JPG, PNG, DICOM)
-    const fileName = file.name.toLowerCase() + '.dcm';
-    const isDicom = fileName.endsWith('.dcm') || file.name.toLowerCase() + '.dcm';
-    const isImage = file.type.match(/^image\/(jpeg|jpg|png|tiff)$/);
+    const fileName = file.name.toLowerCase();
+    const fileType = file.type.toLowerCase();
     
-    if (!isDicom && !isImage) {
-      setError('Sadece JPG, PNG, TIFF ve DICOM dosyaları desteklenir.');
-      return;
+    // Bilinen görsel formatları kontrol et
+    const isStandardImage = fileType.match(/^image\/(jpeg|jpg|png|tiff|bmp|gif)$/) || 
+                           fileName.match(/\.(jpg|jpeg|png|tiff|bmp|gif)$/);
+    
+    // DICOM formatı kontrolü (daha esnek)
+    // .dcm, .dicom uzantılı veya DICOM MIME type'ı olan dosyalar
+    const hasDicomExtension = fileName.match(/\.(dcm|dicom)$/);
+    const hasDicomMimeType = fileType === 'application/dicom' || 
+                            fileType === 'image/x-dcm' ||
+                            fileType === 'application/dicom; transfer-syntax=*';
+    
+    // Dosya tipi belirsiz veya boşsa, DICOM olarak kabul et (uzantısız DICOM dosyaları için)
+    const isUnknownType = !fileType || fileType === '' || fileType === 'application/octet-stream';
+    const isLikelyDicom = hasDicomExtension || hasDicomMimeType || (isUnknownType && !isStandardImage);
+    
+    // Eğer ne standart görsel ne de DICOM değilse kontrol et
+    let finalIsDicom = isLikelyDicom;
+    if (!isStandardImage && !isLikelyDicom) {
+      // Dosya boyutu büyükse ve tip belirsizse DICOM olarak kabul et
+      if (isUnknownType && file.size > 100000) { // 100KB'dan büyükse DICOM olabilir
+        console.log('Bilinmeyen dosya tipi (büyük dosya), DICOM olarak işlenecek:', file.name);
+        finalIsDicom = true;
+      } else {
+        setError('Sadece JPG, PNG, TIFF ve DICOM dosyaları desteklenir.');
+        return;
+      }
     }
     
     // Dosya boyutunu kontrol et (max 10MB)
@@ -48,7 +65,7 @@ export const useImageLoader = () => {
         const url = e.target.result;
         
         // DICOM için URL oluşturma (binary data)
-        if (isDicom) {
+        if (finalIsDicom) {
           setUploadedImage({
             file,
             url: null,  // DICOM için URL yok
@@ -57,19 +74,19 @@ export const useImageLoader = () => {
             type: 'application/dicom',
             isDicom: true
           });
+          setIsLoading(false);
         } else {
           // PNG/JPG/TIFF için data URL
-          setImageUrl(url);
           setUploadedImage({
             file,
             url,
             name: file.name,
             size: file.size,
-            type: file.type,
+            type: file.type || 'image/jpeg',
             isDicom: false
           });
+          setIsLoading(false);
         }
-        setIsLoading(false);
       };
       
       reader.onerror = () => {
@@ -78,7 +95,7 @@ export const useImageLoader = () => {
       };
       
       // DICOM dosyasını binary olarak oku
-      if (isDicom) {
+      if (finalIsDicom) {
         reader.readAsArrayBuffer(file);
       } else {
         reader.readAsDataURL(file);
@@ -117,29 +134,13 @@ export const useImageLoader = () => {
    */
   const clearImage = useCallback(() => {
     setUploadedImage(null);
-    setImageUrl(null);
     setError(null);
     setIsLoading(false);
   }, []);
 
-  /**
-   * Görsel boyutlarını al
-   */
-  const getImageDimensions = useCallback(() => {
-    if (image) {
-      return {
-        width: image.naturalWidth,
-        height: image.naturalHeight
-      };
-    }
-    return null;
-  }, [image]);
-
   return {
     // State
     uploadedImage,
-    image,
-    imageStatus,
     isLoading,
     error,
     
@@ -147,12 +148,6 @@ export const useImageLoader = () => {
     uploadFile,
     handleDrop,
     handleDragOver,
-    clearImage,
-    getImageDimensions,
-    
-    // Computed
-    isImageLoaded: imageStatus === 'loaded',
-    isImageLoading: imageStatus === 'loading',
-    isImageError: imageStatus === 'failed'
+    clearImage
   };
 };

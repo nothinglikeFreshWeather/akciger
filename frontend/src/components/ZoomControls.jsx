@@ -1,7 +1,7 @@
 import React from 'react';
 
 /**
- * Zoom kontrolleri bileşeni - Koyu tema
+ * Zoom kontrolleri bileşeni - Word 2013 Style
  */
 const ZoomControls = ({
   zoomLevel = 1,
@@ -29,24 +29,39 @@ const ZoomControls = ({
   };
 
   return (
-    <div style={{display: 'flex', flexDirection: 'column', gap: '6px'}}>
-      {/* Kompakt Zoom Butonları */}
-      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px'}}>
+    <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
+      {/* Zoom Butonları */}
+      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px'}}>
         <button
           onClick={handleZoomOut}
           disabled={disabled}
           style={{
-            padding: '6px',
-            backgroundColor: disabled ? '#374151' : '#475569',
-            color: disabled ? '#64748b' : '#e2e8f0',
-            border: '1px solid #64748b',
-            borderRadius: '4px',
-            fontSize: '12px',
+            padding: '10px',
+            backgroundColor: disabled ? '#F5F5F5' : '#FFFFFF',
+            color: disabled ? '#BDBDBD' : '#1a1a1a',
+            border: '1px solid',
+            borderColor: disabled ? '#E0E0E0' : '#E8E8E8',
+            borderRadius: '8px',
+            fontSize: '16px',
             cursor: disabled ? 'not-allowed' : 'pointer',
-            fontWeight: '600',
-            transition: 'all 0.2s'
+            fontWeight: '500',
+            transition: 'all 0.2s ease'
           }}
-          title="Zoom Out (-)"
+          onMouseEnter={(e) => {
+            if (!disabled) {
+              e.target.style.backgroundColor = '#F5F5F5';
+              e.target.style.borderColor = '#1E88E5';
+              e.target.style.color = '#1E88E5';
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!disabled) {
+              e.target.style.backgroundColor = '#FFFFFF';
+              e.target.style.borderColor = '#E8E8E8';
+              e.target.style.color = '#1a1a1a';
+            }
+          }}
+          title="Zoom Out"
         >
           −
         </button>
@@ -55,57 +70,87 @@ const ZoomControls = ({
           onClick={handleZoomReset}
           disabled={disabled}
           style={{
-            padding: '6px',
-            backgroundColor: disabled ? '#374151' : '#3b82f6',
-            color: disabled ? '#64748b' : 'white',
+            padding: '10px',
+            backgroundColor: disabled ? '#F5F5F5' : '#1E88E5',
+            color: disabled ? '#BDBDBD' : 'white',
             border: 'none',
-            borderRadius: '4px',
-            fontSize: '10px',
+            borderRadius: '8px',
+            fontSize: '12px',
             cursor: disabled ? 'not-allowed' : 'pointer',
             fontWeight: '600',
-            transition: 'all 0.2s'
+            transition: 'all 0.2s ease',
+            letterSpacing: '-0.01em',
+            boxShadow: disabled ? 'none' : '0 2px 4px rgba(30, 136, 229, 0.2)'
           }}
-          title="Reset Zoom (1:1)"
+          onMouseEnter={(e) => {
+            if (!disabled) {
+              e.target.style.backgroundColor = '#1976D2';
+              e.target.style.boxShadow = '0 4px 8px rgba(30, 136, 229, 0.3)';
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!disabled) {
+              e.target.style.backgroundColor = '#1E88E5';
+              e.target.style.boxShadow = '0 2px 4px rgba(30, 136, 229, 0.2)';
+            }
+          }}
+          title="Reset Zoom"
         >
-          ↻
+          1:1
         </button>
 
         <button
           onClick={handleZoomIn}
           disabled={disabled}
           style={{
-            padding: '6px',
-            backgroundColor: disabled ? '#374151' : '#475569',
-            color: disabled ? '#64748b' : '#e2e8f0',
-            border: '1px solid #64748b',
-            borderRadius: '4px',
-            fontSize: '12px',
+            padding: '10px',
+            backgroundColor: disabled ? '#F5F5F5' : '#FFFFFF',
+            color: disabled ? '#BDBDBD' : '#1a1a1a',
+            border: '1px solid',
+            borderColor: disabled ? '#E0E0E0' : '#E8E8E8',
+            borderRadius: '8px',
+            fontSize: '16px',
             cursor: disabled ? 'not-allowed' : 'pointer',
-            fontWeight: '600',
-            transition: 'all 0.2s'
+            fontWeight: '500',
+            transition: 'all 0.2s ease'
           }}
-          title="Zoom In (+)"
+          onMouseEnter={(e) => {
+            if (!disabled) {
+              e.target.style.backgroundColor = '#F5F5F5';
+              e.target.style.borderColor = '#1E88E5';
+              e.target.style.color = '#1E88E5';
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!disabled) {
+              e.target.style.backgroundColor = '#FFFFFF';
+              e.target.style.borderColor = '#E8E8E8';
+              e.target.style.color = '#1a1a1a';
+            }
+          }}
+          title="Zoom In"
         >
           +
         </button>
       </div>
 
-      {/* Kompakt Zoom Göstergesi */}
+      {/* Zoom Göstergesi */}
       <div style={{
-        backgroundColor: '#374151',
-        borderRadius: '4px',
-        padding: '6px',
-        border: '1px solid #4b5563',
+        backgroundColor: '#F5F5F5',
+        borderRadius: '8px',
+        padding: '10px 12px',
+        border: '1px solid #E8E8E8',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between'
       }}>
-        <span style={{fontSize: '9px', color: '#94a3b8', fontWeight: '500'}}>Zoom</span>
+        <span style={{fontSize: '12px', color: '#757575', fontWeight: '500', letterSpacing: '-0.01em'}}>Zoom</span>
         <span style={{
-          fontSize: '11px',
-          color: '#3b82f6',
-          fontWeight: '700',
-          fontFamily: 'monospace'
+          fontSize: '14px',
+          color: '#1E88E5',
+          fontWeight: '600',
+          fontFamily: 'monospace',
+          letterSpacing: '-0.02em'
         }}>
           {Math.round(zoomLevel * 100)}%
         </span>

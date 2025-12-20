@@ -29,8 +29,8 @@ const XrayCanvas = ({
   const [isDrawingLine, setIsDrawingLine] = useState(false);
   const [currentLine, setCurrentLine] = useState([]);
   const [isPanning, setIsPanning] = useState(false);
-  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
+  const [imageScale, setImageScale] = useState(1);
 
   // Cursor yönetimi için hook
   const { cursorState } = useCursorManager(
@@ -60,6 +60,40 @@ const XrayCanvas = ({
     window.addEventListener('resize', updateStageSize);
     return () => window.removeEventListener('resize', updateStageSize);
   }, [updateStageSize]);
+
+  // Görüntü yüklendiğinde container'a sığdır ve ortala
+  useEffect(() => {
+    if (!image || !stageSize.width || !stageSize.height) return;
+    
+    const imgWidth = image.naturalWidth;
+    const imgHeight = image.naturalHeight;
+    
+    if (imgWidth === 0 || imgHeight === 0) return;
+    
+    // Container'a sığdırmak için scale hesapla
+    const scaleX = stageSize.width / imgWidth;
+    const scaleY = stageSize.height / imgHeight;
+    const fitScale = Math.min(scaleX, scaleY) * 0.95; // %95 ile biraz padding bırak
+    
+    setImageScale(fitScale);
+  }, [image, stageSize.width, stageSize.height]);
+
+  // Zoom veya scale değiştiğinde görüntüyü yeniden ortala
+  useEffect(() => {
+    if (!image || !stageSize.width || !stageSize.height || imageScale === 0) return;
+    
+    const imgWidth = image.naturalWidth;
+    const imgHeight = image.naturalHeight;
+    
+    if (imgWidth === 0 || imgHeight === 0) return;
+    
+    const scaledWidth = imgWidth * imageScale * zoomLevel;
+    const scaledHeight = imgHeight * imageScale * zoomLevel;
+    const centerX = (stageSize.width - scaledWidth) / 2;
+    const centerY = (stageSize.height - scaledHeight) / 2;
+    
+    setPanPosition({ x: centerX, y: centerY });
+  }, [zoomLevel, imageScale, stageSize.width, stageSize.height, image]);
 
   /**
    * Seçili şekli güncelle
@@ -239,15 +273,7 @@ const XrayCanvas = ({
   const handleStageMouseMove = useCallback((e) => {
     const pos = getAccuratePosition(e);
     
-    // Mouse pozisyonunu güncelle (debug için)
-    setMousePosition(pos);
     
-    // Pan işlemi için pozisyon güncelle
-    if (isPanning && selectedTool === 'pan') {
-      const stage = e.target.getStage();
-      const newPos = stage.position();
-      setPanPosition({ x: newPos.x, y: newPos.y });
-    }
     
     if (isDrawingLine && selectedTool === 'pen') {
       // Kalem çizimi - sürekli çizgi ekle
@@ -426,47 +452,22 @@ const XrayCanvas = ({
     // Zoom level'ı güncelle
     onZoomChange?.(newScale);
     
-    // Pan position'ı güncelle
-    const newPos = {
-      x: pointer.x - mousePointTo.x * newScale,
-      y: pointer.y - mousePointTo.y * newScale,
-    };
-    
-    setPanPosition(newPos);
+    // Pan position otomatik olarak useEffect'te güncellenecek (ortalanacak)
     
   }, [onZoomChange, selectedTool, zoomLevel]);
 
   if (!image) {
-    return (
-      <div style={{
-        width: '100%',
-        height: '100%',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: '#0f172a',
-        border: '2px dashed #334155',
-        borderRadius: '12px',
-        color: '#94a3b8'
-      }}>
-        <div style={{textAlign: 'center'}}>
-          <div style={{fontSize: '48px', marginBottom: '16px'}}>🖼️</div>
-          <p style={{fontSize: '18px', fontWeight: '600', margin: '0 0 8px 0'}}>X-ray görseli yükleyin</p>
-          <p style={{fontSize: '14px', margin: 0}}>Canvas burada görünecek</p>
-        </div>
-      </div>
-    );
+    return null; // Upload area will be handled in parent component
   }
 
   return (
     <div style={{
       width: '100%',
       height: '100%',
-      backgroundColor: '#0f172a',
-      borderRadius: '12px',
+      backgroundColor: '#000000',
+      borderRadius: '0',
       overflow: 'hidden',
-      boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
-      border: '1px solid #334155'
+      position: 'relative'
     }}>
       <Stage
         ref={stageRef}
@@ -476,23 +477,30 @@ const XrayCanvas = ({
         onMouseMove={handleStageMouseMove}
         onMouseUp={handleStageMouseUp}
         onWheel={handleWheel}
-        draggable={selectedTool === 'pan'} // Sadece pan aracı seçiliyken pan aktif
+        draggable={false} // Pan devre dışı - görüntü sabit kalacak
+        clipX={0}
+        clipY={0}
+        clipWidth={stageSize.width}
+        clipHeight={stageSize.height}
         style={{
-          cursor: cursorState
+          cursor: cursorState,
+          backgroundColor: '#000000'
         }}
       >
         {/* Base Image Layer */}
         <Layer>
-          <Image
-            image={image}
-            width={stageSize.width}
-            height={stageSize.height}
-            scaleX={zoomLevel}
-            scaleY={zoomLevel}
-            x={panPosition.x}
-            y={panPosition.y}
-            listening={false}
-          />
+          {image && image.naturalWidth > 0 && image.naturalHeight > 0 && (
+            <Image
+              image={image}
+              width={image.naturalWidth}
+              height={image.naturalHeight}
+              scaleX={imageScale * zoomLevel}
+              scaleY={imageScale * zoomLevel}
+              x={panPosition.x}
+              y={panPosition.y}
+              listening={false}
+            />
+          )}
         </Layer>
 
         {/* Detected Regions Layer */}
@@ -632,34 +640,6 @@ const XrayCanvas = ({
         </Layer>
       </Stage>
       
-      {/* Debug Panel - Koordinat Bilgileri */}
-      {import.meta.env.DEV && (
-        <div style={{
-          position: 'absolute',
-          top: '10px',
-          left: '10px',
-          backgroundColor: 'rgba(0, 0, 0, 0.9)',
-          color: 'white',
-          padding: '10px 14px',
-          borderRadius: '6px',
-          fontSize: '11px',
-          fontFamily: 'monospace',
-          zIndex: 1000,
-          border: '1px solid #333',
-          minWidth: '200px'
-        }}>
-          <div style={{fontWeight: 'bold', marginBottom: '4px', color: '#60a5fa'}}>Debug Panel</div>
-          <div>Mouse: ({Math.round(mousePosition.x)}, {Math.round(mousePosition.y)})</div>
-          <div>Tool: <span style={{color: selectedTool === 'eraser' ? '#ef4444' : '#10b981'}}>{selectedTool}</span></div>
-          <div>Zoom: {Math.round(zoomLevel * 100)}%</div>
-          <div>Drawing: {isDrawing ? 'Yes' : 'No'}</div>
-          <div>Panning: {isPanning ? 'Yes' : 'No'}</div>
-          <div>Draggable: {selectedTool === 'pan' ? 'Yes' : 'No'}</div>
-          <div style={{marginTop: '4px', fontSize: '10px', color: '#94a3b8'}}>
-            Eraser: Click on shapes to delete
-          </div>
-        </div>
-      )}
     </div>
   );
 };
